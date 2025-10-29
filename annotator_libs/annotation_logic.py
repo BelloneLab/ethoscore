@@ -213,7 +213,6 @@ def update_annotations_on_frame_change(annotations, current_frame, video_player,
     if video_player.removing_mode:
         if current_frame in annotations:
             del annotations[current_frame]
-            print(f"DEBUG: update_annotations_on_frame_change - Labels removed from frame {current_frame} due to removing_mode.")
 
     # Handle hold mode: if a behavior is being held, apply it to the current frame
     if hasattr(video_player, 'held_behavior') and video_player.held_behavior:
@@ -257,12 +256,8 @@ def handle_label_state_change(annotations, behavior, is_active, current_frame, v
 
 def remove_labels_from_frame(annotations, current_frame, video_player):
     """Remove label from the current frame"""
-    print(f"DEBUG: remove_labels_from_frame called for frame {current_frame}")
     if current_frame in annotations:
         del annotations[current_frame]
-        print(f"DEBUG: Label removed from annotations for frame {current_frame}")
-    else:
-        print(f"DEBUG: No label found for frame {current_frame} to remove.")
 
     # Clear active labels
     video_player.active_labels = {}

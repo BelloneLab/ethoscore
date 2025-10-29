@@ -1041,7 +1041,7 @@ class VideoAnnotator(QMainWindow):
         # Deselect behavior buttons if no behaviors active
         if not any(self.video_player.active_labels.values()):
             for btn in self.behavior_buttons.buttons:
-                btn.setChecked(False)
+                btn.button.setChecked(False)
 
         # Update timeline with new annotations
         self.update_timeline_annotations()

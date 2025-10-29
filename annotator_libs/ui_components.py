@@ -1,6 +1,6 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
                               QScrollArea, QGridLayout, QInputDialog, QMessageBox, QGroupBox)
-from PySide6.QtCore import Qt, Signal, QSize, QPropertyAnimation, QEasingCurve, QRect
+from PySide6.QtCore import Qt, Signal, QSize, QPropertyAnimation, QEasingCurve, QRect, QTimer
 from PySide6.QtGui import QPainter, QPen, QColor, QFont, QPaintEvent, QPixmap, QImage, QTransform
 import os
 
@@ -85,8 +85,8 @@ class BehaviorButtons(QWidget):
         behaviors_layout.setSpacing(5)
 
         # Scroll area for behaviors
-        scroll_area = QScrollArea()
-        scroll_area.setStyleSheet("""
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setStyleSheet("""
             QScrollArea {
                 border: 1px solid #cccccc;
                 border-radius: 3px;
@@ -97,11 +97,10 @@ class BehaviorButtons(QWidget):
         self.grid_layout = QGridLayout(scroll_widget)
         self.grid_layout.setContentsMargins(5, 5, 5, 5)
         self.grid_layout.setSpacing(5)
-        scroll_area.setWidget(scroll_widget)
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setMinimumHeight(150)
-        scroll_area.setMaximumHeight(250)
-        behaviors_layout.addWidget(scroll_area)
+        self.scroll_area.setWidget(scroll_widget)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setMinimumHeight(150)
+        behaviors_layout.addWidget(self.scroll_area)
 
         layout.addWidget(behaviors_group)
 
@@ -171,14 +170,34 @@ class BehaviorButtons(QWidget):
     def load_behaviors(self, behaviors):
         """Load behaviors from list"""
         self.behaviors = behaviors
+        self.layout_buttons()
+
+    def layout_buttons(self):
+        """Layout the behavior buttons based on available width"""
         self.buttons = []
 
-        # Clear existing buttons
-        for i in reversed(range(self.grid_layout.count())):
-            self.grid_layout.itemAt(i).widget().setParent(None)
+        # Clear existing widgets safely
+        while self.grid_layout.count():
+            item = self.grid_layout.takeAt(0)
+            if item and item.widget():
+                item.widget().setParent(None)
 
-        # Create new buttons with colors
-        for i, behavior in enumerate(behaviors):
+        if not self.behaviors:
+            return
+
+        # Calculate number of columns based on available width
+        available_width = self.scroll_area.viewport().width() - 20  # Subtract margins
+        if available_width <= 0:
+            available_width = 300  # Default fallback
+
+        # Estimate button width (rough estimate)
+        estimated_btn_width = 120  # Minimum button width
+        num_columns = max(1, available_width // estimated_btn_width)
+
+        # Add buttons to grid
+        for i, behavior in enumerate(self.behaviors):
+            row = i // num_columns
+            col = i % num_columns
             btn_widget = BehaviorButtonWidget(f"{i+1}. {behavior}", behavior, self)
 
             # Set button color based on behavior
@@ -201,8 +220,22 @@ class BehaviorButtons(QWidget):
             btn_widget.set_button_style(button_style)
 
             btn_widget.clicked.connect(lambda b=behavior: self.toggle_behavior(b))
-            self.grid_layout.addWidget(btn_widget, i // 3, i % 3)
+            self.grid_layout.addWidget(btn_widget, row, col)
             self.buttons.append(btn_widget)
+
+        # Set column stretches for equal sizing
+        for col in range(num_columns):
+            self.grid_layout.setColumnStretch(col, 1)
+
+    def resizeEvent(self, event):
+        """Handle resize to re-layout buttons with delay"""
+        super().resizeEvent(event)
+        if hasattr(self, '_resize_timer') and self._resize_timer.isActive():
+            self._resize_timer.stop()
+        self._resize_timer = QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.timeout.connect(self.layout_buttons)
+        self._resize_timer.start(100)  # 100ms delay
 
     def darken_color(self, color):
         """Darken a hex color"""
@@ -225,8 +258,8 @@ class BehaviorButtons(QWidget):
     def get_selected_behavior(self):
         """Get currently selected behavior"""
         for btn in self.buttons:
-            if btn.isChecked():
-                return btn.text().split(". ")[1]
+            if btn.button.isChecked():
+                return btn.button.text().split(". ")[1]
         return None
 
     def get_behavior_color(self, behavior):
