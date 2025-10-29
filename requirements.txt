@@ -1,0 +1,5 @@
+PySide6>=6.4.0
+opencv-python>=4.8.0
+pandas>=1.5.0
+numpy>=1.21.0
+pygame>=2.0.0
