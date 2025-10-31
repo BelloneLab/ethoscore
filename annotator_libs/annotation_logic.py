@@ -209,27 +209,33 @@ def get_default_behaviors():
 def update_annotations_on_frame_change(annotations, current_frame, video_player, available_behaviors):
     """Update annotations when frame changes, handling active labels and removing mode"""
 
+    # Check for range labeling preview - show behavior on current frame if within active range
+    preview_behavior = None
+    for behavior, is_active in video_player.range_labeling_active.items():
+        if is_active:
+            start_frame = video_player.range_labeling_start.get(behavior)
+            if start_frame is not None:
+                # Show preview from start_frame to current_frame (inclusive)
+                min_frame = min(start_frame, current_frame)
+                max_frame = max(start_frame, current_frame)
+                if min_frame <= current_frame <= max_frame:
+                    preview_behavior = behavior
+                    break
+
     # If in removing mode, remove labels from this frame
     if video_player.removing_mode:
         if current_frame in annotations:
             del annotations[current_frame]
 
-    # Handle hold mode: if a behavior is being held, apply it to the current frame
-    if hasattr(video_player, 'held_behavior') and video_player.held_behavior:
-        behavior = video_player.held_behavior
-        annotations[current_frame] = behavior
+    # Determine what to display: preview takes precedence over actual annotation
+    if preview_behavior:
+        # Show preview behavior
+        active_behaviors_list = [preview_behavior]
+    else:
+        # Show actual annotation
+        current_behavior = annotations.get(current_frame, None)
+        active_behaviors_list = [current_behavior] if current_behavior else []
 
-    # If there are active labels (from continuous labeling), apply them to this frame
-    active_behaviors = [b for b, active in video_player.active_labels.items() if active]
-    if active_behaviors:
-        # Only one behavior can be active at a time, take the first one
-        behavior = active_behaviors[0]
-        if not (video_player.label_key_held.get(behavior, False) and current_frame in annotations and behavior == annotations[current_frame]):
-            annotations[current_frame] = behavior
-
-    # Update current behavior for display
-    current_behavior = annotations.get(current_frame, None)
-    active_behaviors_list = [current_behavior] if current_behavior else []
     video_player.current_behavior = active_behaviors_list
 
     return active_behaviors_list
@@ -288,3 +294,53 @@ def handle_behavior_removal(annotations, behavior, available_behaviors):
     for frame in list(annotations.keys()):
         if behavior == annotations[frame]:
             del annotations[frame]
+
+
+def apply_range_label(annotations, behavior, start_frame, end_frame, available_behaviors, include_last_frame=True):
+    """Apply a behavior label to a range of frames"""
+    if behavior not in available_behaviors:
+        return
+
+    # Ensure start_frame <= end_frame
+    if start_frame > end_frame:
+        start_frame, end_frame = end_frame, start_frame
+
+    # Determine the end frame based on the include_last_frame setting
+    if include_last_frame:
+        # Include the last frame (original behavior)
+        range_end = end_frame + 1
+    else:
+        # Exclude the last frame
+        range_end = end_frame
+
+    # Apply the label to all frames in the range
+    for frame in range(start_frame, range_end):
+        annotations[frame] = behavior
+
+
+def remove_range_labels(annotations, start_frame, end_frame):
+    """Remove labels from a range of frames (inclusive)"""
+    # Ensure start_frame <= end_frame
+    if start_frame > end_frame:
+        start_frame, end_frame = end_frame, start_frame
+
+    # Remove labels from all frames in the range
+    for frame in range(start_frame, end_frame + 1):
+        if frame in annotations:
+            del annotations[frame]
+
+
+def handle_range_label_state_change(annotations, behavior, start_frame, end_frame, current_frame, video_player):
+    """Handle range-based label state change - apply label to range and update UI"""
+    # Apply the label to the range
+    apply_range_label(annotations, behavior, start_frame, end_frame, video_player.available_behaviors, video_player.include_last_frame_in_range)
+
+    # Update current behavior for display (based on current frame)
+    current_behavior = annotations.get(current_frame, None)
+    active_behaviors_list = [current_behavior] if current_behavior else []
+    video_player.current_behavior = active_behaviors_list
+
+    # Update UI
+    video_player.update_frame_display()
+
+    return active_behaviors_list

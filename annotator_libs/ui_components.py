@@ -51,7 +51,7 @@ class BehaviorButtons(QWidget):
             "nose-to-body": "#A7DB50",  # Lime
             "anogenital": "#45B7D1",    # Blue
             "passive": "#BD23FF",       # Violet
-            "rearing": "#FFEAA7",       # Yellow
+            "rearing": "#ECFF1C",       # Yellow
             "fighting": "#00FFC8",     # Turquoise
             "mounting": "#FF8C00"      # Orange
         }
@@ -314,6 +314,8 @@ class TimelineWidget(QWidget):
     """Widget showing video timeline with zoom and click functionality"""
 
     frame_clicked = Signal(int)  # Signal emitted when timeline is clicked
+    drag_started = Signal(int)  # Signal emitted when timeline drag starts (start_frame)
+    drag_ended = Signal(int)  # Signal emitted when timeline drag ends (final_frame)
 
     def __init__(self):
         super().__init__()
@@ -334,10 +336,37 @@ class TimelineWidget(QWidget):
         self.min_zoom = 0.01
         self.max_zoom = 10.0
 
+        # Drag state
+        self.is_dragging = False
+        self.last_mouse_x = 0
+        self.drag_timer = QTimer(self)
+        self.drag_timer.setSingleShot(True)
+        self.drag_timer.timeout.connect(self.emit_pending_frame_change)
+        self.pending_frame = None
+
+        # Range labeling preview state
+        self.preview_behavior = None
+        self.preview_start_frame = -1
+        self.preview_end_frame = -1 # This will be the current_frame during drag
+
     def set_annotations(self, annotations, behavior_colors):
         """Set annotations and behavior colors for display"""
         self.annotations = annotations
         self.behavior_colors = behavior_colors
+        self.update()
+
+    def set_range_preview(self, behavior, start_frame, current_frame):
+        """Set the range labeling preview for display"""
+        self.preview_behavior = behavior
+        self.preview_start_frame = start_frame
+        self.preview_end_frame = current_frame
+        self.update()
+
+    def clear_range_preview(self):
+        """Clear the range labeling preview"""
+        self.preview_behavior = None
+        self.preview_start_frame = -1
+        self.preview_end_frame = -1
         self.update()
 
     def wheelEvent(self, event):
@@ -366,11 +395,68 @@ class TimelineWidget(QWidget):
             self.update()
 
     def mousePressEvent(self, event):
-        """Handle mouse click to jump to frame"""
+        """Handle mouse press to start dragging"""
         if event.button() == Qt.LeftButton and self.total_frames > 0:
-            frame = self.x_to_frame(event.position().x())
+            self.is_dragging = True
+            self.last_mouse_x = event.position().x()
+            self.drag_start_frame = self.current_frame  # Store the frame where dragging started
+
+            # Emit signal for drag start
+            self.drag_started.emit(self.drag_start_frame)
+
+    def mouseMoveEvent(self, event):
+        """Handle mouse movement during dragging"""
+        if self.is_dragging and self.total_frames > 0:
+            # Calculate mouse movement delta from drag start
+            mouse_delta = event.position().x() - self.last_mouse_x
+
+            # Convert mouse movement to frame movement
+            # Use zoom level as sensitivity - more zoomed in = finer control
+            # Reverse direction: moving mouse right = go backward in timeline
+            frame_delta = -mouse_delta / self.get_pixels_per_frame()
+            frame = int(self.drag_start_frame + frame_delta)
             frame = max(0, min(self.total_frames - 1, frame))
-            self.frame_clicked.emit(frame)
+
+            # Update timeline marker position immediately for visual feedback
+            self.current_frame = frame
+            self.update()
+
+            # Throttle frame changes to prevent excessive updates
+            self.pending_frame = frame
+            if not self.drag_timer.isActive():
+                self.drag_timer.start(16)  # ~60 FPS throttling
+
+    def mouseReleaseEvent(self, event):
+        """Handle mouse release to stop dragging"""
+        if event.button() == Qt.LeftButton:
+            self.is_dragging = False
+
+            # Calculate the final frame where mouse was released
+            final_frame = self.x_to_frame(event.position().x())
+            final_frame = max(0, min(self.total_frames - 1, final_frame))
+
+            # Emit any pending frame change
+            if self.pending_frame is not None:
+                self.frame_clicked.emit(self.pending_frame)
+                self.pending_frame = None
+
+            # Emit signal for drag end with final frame
+            self.drag_ended.emit(final_frame)
+
+    def emit_pending_frame_change(self):
+        """Emit the pending frame change from throttled dragging"""
+        if self.pending_frame is not None and self.is_dragging:
+            # Check if VideoPlayer has active range labeling - if so, don't emit frame changes
+            # as they will interfere with range labeling
+            if hasattr(self.parent(), 'video_player'):
+                video_player = self.parent().video_player
+                # Check if any range labeling is active
+                has_active_range_labeling = any(video_player.range_labeling_active.values())
+                if not has_active_range_labeling:
+                    self.frame_clicked.emit(self.pending_frame)
+            else:
+                self.frame_clicked.emit(self.pending_frame)
+            self.pending_frame = None
 
     def x_to_frame(self, x):
         """Convert x coordinate to frame number"""
@@ -382,10 +468,7 @@ class TimelineWidget(QWidget):
 
     def get_pixels_per_frame(self):
         """Get pixels per frame based on zoom level"""
-        if self.total_frames == 0:
-            return 1.0
-        visible_frames = self.width() / self.zoom_level
-        return self.width() / visible_frames if visible_frames > 0 else 1.0
+        return self.zoom_level
 
     def clamp_scroll_offset(self):
         """Ensure scroll offset keeps timeline visible"""
@@ -423,6 +506,9 @@ class TimelineWidget(QWidget):
 
         # Draw behavior segments
         self.draw_behavior_segments(painter, width, height)
+
+        # Draw range labeling preview if active
+        self.draw_range_preview(painter, width, height)
 
         # Draw timeline axis
         painter.setPen(QPen(Qt.black, 1))
@@ -485,6 +571,31 @@ class TimelineWidget(QWidget):
                     if visible_end - visible_start > 50:
                         painter.setPen(QPen(Qt.black, 1))
                         painter.drawText(rect, Qt.AlignCenter, behavior[:3])
+
+    def draw_range_preview(self, painter, width, height):
+        """Draw a temporary colored segment for range labeling preview"""
+        if self.preview_behavior and self.preview_start_frame != -1 and self.preview_end_frame != -1:
+            color = self.behavior_colors.get(self.preview_behavior, "#CCCCCC")
+            q_color = QColor(color)
+
+            start = min(self.preview_start_frame, self.preview_end_frame)
+            end = max(self.preview_start_frame, self.preview_end_frame)
+
+            start_x = self.frame_to_x(start)
+            end_x = self.frame_to_x(end + 1) # +1 to include the end frame
+
+            if end_x > 0 and start_x < width:
+                visible_start = max(0, start_x)
+                visible_end = min(width, end_x)
+
+                if visible_start < visible_end:
+                    # Draw with a lighter, more transparent color for preview
+                    painter.fillRect(int(visible_start), 5, int(visible_end - visible_start), height - 10,
+                                   QColor(q_color.red(), q_color.green(), q_color.blue(), 80)) # More transparent
+
+                    # Draw a dashed border
+                    painter.setPen(QPen(QColor(q_color.red(), q_color.green(), q_color.blue(), 200), 2, Qt.DashLine))
+                    painter.drawRect(int(visible_start), 5, int(visible_end - visible_start), height - 10)
 
     def draw_frame_markers(self, painter, width, height):
         """Draw frame number markers"""

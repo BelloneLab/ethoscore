@@ -134,9 +134,10 @@ class VideoPlayer(QLabel):
     preload_progress = Signal(int, int) # current_preloaded, total_to_preload
     preload_finished = Signal() # Signal emitted when all preloading is complete
 
-    def __init__(self):
+    def __init__(self, timeline=None):
         super().__init__()
         self.program_start_time = None  # Will be set by main application
+        self.timeline = timeline  # Reference to the TimelineWidget
         self.video_capture = None
         self.current_frame = 0
         self.total_frames = 0
@@ -197,6 +198,14 @@ class VideoPlayer(QLabel):
         self.label_key_mode = 'both'  # Default both modes
         self.show_overlay_bars = False # New attribute to control overlay bar visibility
 
+        # Range-based labeling state
+        self.range_labeling_active = {}  # behavior -> True if currently in range labeling mode
+        self.range_labeling_start = {}  # behavior -> start frame for range labeling
+        # self.range_labeling_preview = {}  # Removed, now handled by TimelineWidget directly
+
+        # Range labeling settings
+        self.include_last_frame_in_range = False  # Default to not include last frame
+
         # Display scaling state
         self.target_width = 640
         self.target_height = 480
@@ -239,7 +248,7 @@ class VideoPlayer(QLabel):
         # Preview bars
         self.prev_bar = QLabel()
         self.prev_bar.setFixedWidth(8)
-        self.prev_bar.setFixedHeight(16)
+        self.prev_bar.setFixedHeight(32)
         self.prev_bar.setVisible(False)
         overlay_layout.addWidget(self.prev_bar)
 
@@ -250,7 +259,7 @@ class VideoPlayer(QLabel):
 
         self.next_bar = QLabel()
         self.next_bar.setFixedWidth(8)
-        self.next_bar.setFixedHeight(16)
+        self.next_bar.setFixedHeight(32)
         self.next_bar.setVisible(False)
         overlay_layout.addWidget(self.next_bar)
 
@@ -318,6 +327,10 @@ class VideoPlayer(QLabel):
         """Enable or disable the display of overlay preview bars"""
         self.show_overlay_bars = enabled
         self.update_frame_display() # Redraw to apply changes
+
+    def set_include_last_frame_in_range(self, enabled):
+        """Set whether to include the last selected frame in range labeling"""
+        self.include_last_frame_in_range = enabled
 
     def load_video(self, video_path):
         """Load a video file"""
@@ -437,7 +450,7 @@ class VideoPlayer(QLabel):
 
         # Set stylesheet for the overlay (with or without border)
         if self.show_overlay_bars and self.annotation_overlay.isVisible():
-            self.annotation_overlay.setStyleSheet("background-color: rgba(0, 0, 0, 150); border: 1px solid white; border-radius: 5px;")
+            self.annotation_overlay.setStyleSheet("background-color: rgba(0, 0, 0, 150); border: none; border-radius: 5px;")
         else:
             self.annotation_overlay.setStyleSheet("background-color: rgba(0, 0, 0, 150); border: none; border-radius: 5px;")
 
@@ -452,6 +465,17 @@ class VideoPlayer(QLabel):
 
         # Start preloading after displaying current frame, only if not already finished
         if not self.is_caching_finished:
+            # Update timeline with range preview if a behavior is actively being range-labeled
+            active_range_behaviors = [b for b, active in self.range_labeling_active.items() if active]
+            if active_range_behaviors and self.timeline:
+                behavior = active_range_behaviors[0] # Take the first one
+                start_frame = self.range_labeling_start.get(behavior, self.current_frame)
+                self.timeline.set_range_preview(behavior, start_frame, self.current_frame)
+            else:
+                # Clear any lingering preview if no range labeling is active
+                if self.timeline:
+                    self.timeline.clear_range_preview()
+
             self.preload_timer.start(100)  # Start preloading after 100ms delay
     def start_preloading(self):
         """Start preloading frames around current position"""
@@ -588,6 +612,17 @@ class VideoPlayer(QLabel):
         )
         self.current_behavior = active_behaviors_list
 
+        # Update timeline with range preview if a behavior is actively being range-labeled
+        active_range_behaviors = [b for b, active in self.range_labeling_active.items() if active]
+        if active_range_behaviors and self.timeline:
+            behavior = active_range_behaviors[0] # Take the first one
+            start_frame = self.range_labeling_start.get(behavior, self.current_frame)
+            self.timeline.set_range_preview(behavior, start_frame, self.current_frame)
+        else:
+            # Clear any lingering preview if no range labeling is active
+            if self.timeline:
+                self.timeline.clear_range_preview()
+
         self.update_frame_display()
 
     def next_frame(self, step=1):
@@ -701,14 +736,16 @@ class VideoPlayer(QLabel):
             # Toggle play/pause if we implement that later
             pass
         elif event.key() in range(Qt.Key_1, Qt.Key_9 + 1):
-            # Ignore auto-repeat for number keys to prevent flickering, except in hold mode
-            if event.isAutoRepeat() and self.label_key_mode != 'hold':
+            # Ignore auto-repeat for number keys to prevent flickering, except in hold and toggle modes
+            if event.isAutoRepeat() and self.label_key_mode not in ['hold', 'toggle']:
                 return
             # Number keys for label toggling
             behavior_index = event.key() - Qt.Key_1
             if hasattr(self, 'available_behaviors') and behavior_index < len(self.available_behaviors):
                 behavior = self.available_behaviors[behavior_index]
-                self._handle_label_input(behavior, True, 'keyboard')
+                # Only start labeling if not already active (prevent auto-repeat from starting new ranges)
+                if not self.label_key_held.get(behavior, False):
+                    self._handle_label_input(behavior, True, 'keyboard')
         else:
             super().keyPressEvent(event)
 
@@ -737,6 +774,8 @@ class VideoPlayer(QLabel):
                 self.navigation_direction = 0
                 self.navigation_speed = 1  # Reset to default
         elif event.key() in range(Qt.Key_1, Qt.Key_9 + 1):
+            if event.isAutoRepeat(): # Ignore auto-repeated key releases
+                return
             behavior_index = event.key() - Qt.Key_1
             if hasattr(self, 'available_behaviors') and behavior_index < len(self.available_behaviors):
                 behavior = self.available_behaviors[behavior_index]
@@ -843,6 +882,13 @@ class VideoPlayer(QLabel):
         """Handle long press detection for 'both' mode"""
         if self.label_key_mode == 'both' and self.label_key_held.get(behavior, False):
             self.held_behavior = behavior
+            # Start range labeling for long press
+            if not self.range_labeling_active.get(behavior, False):
+                self.range_labeling_active[behavior] = True
+                self.range_labeling_start[behavior] = self.current_frame
+            # Update timeline with range preview
+            if self.timeline:
+                self.timeline.set_range_preview(behavior, self.current_frame, self.current_frame)
 
     def _clear_hold_labels(self, behavior):
         """Clear held behavior and active labels for hold mode after delay"""
@@ -874,11 +920,11 @@ class VideoPlayer(QLabel):
                     button_name = f"Button {button_id}" # Use generic name for state tracking
 
                     if is_pressed and not self.gamepad_button_states.get(button_name, False):
-                        # Button was just pressed
+                        # Button was just pressed - start range labeling
                         self._handle_label_input(behavior, True, 'controller')
                         self.gamepad_button_states[button_name] = True
                     elif not is_pressed and self.gamepad_button_states.get(button_name, False):
-                        # Button was just released
+                        # Button was just released - complete range labeling
                         self._handle_label_input(behavior, False, 'controller')
                         self.gamepad_button_states[button_name] = False
                 except pygame.error:
@@ -946,125 +992,197 @@ class VideoPlayer(QLabel):
 
     def _handle_label_input(self, behavior, is_pressed, input_type):
         """
-        Handles label input (keyboard or controller) based on the current label_key_mode.
-        :param behavior: The behavior string to toggle/hold.
-        :param is_pressed: True if the input is a press, False if a release.
-        :param input_type: 'keyboard' or 'controller'
+        Handle label input based on the current label key mode:
+        - toggle: Press to toggle label on current frame
+        - hold: Press and hold to label range from press to release
+        - both: Short press to toggle, long press to label range
         """
-        current_time = time.time() * 1000 # Convert to milliseconds for consistency with event.timestamp()
+        from annotator_libs.annotation_logic import apply_range_label
 
         if is_pressed:
-            # Set key as held
             self.label_key_held[behavior] = True
-            # Record press start time
-            self.key_press_start_time[behavior] = current_time
 
             if self.label_key_mode == 'toggle':
-                # Toggle mode: immediate activation/deactivation
-                if self.is_toggled_active.get(behavior, False):
-                    self.is_stopping_toggle[behavior] = True
-                    self.is_toggled_active[behavior] = False
-                    self.active_labels[behavior] = False
-                    self.label_toggled.emit(behavior, False)
-                    self.update_frame_display()
+                # Toggle mode: press once to start range, press again to end range
+                if not self.range_labeling_active.get(behavior, False):
+                    # First press: start range labeling
+                    self.range_labeling_active[behavior] = True
+                    self.range_labeling_start[behavior] = self.current_frame
+                    # Update timeline with range preview
+                    if self.timeline:
+                        self.timeline.set_range_preview(behavior, self.current_frame, self.current_frame)
                 else:
-                    # First, deactivate all other behaviors
-                    for other_behavior in list(self.active_labels.keys()):
-                        if other_behavior != behavior and self.active_labels[other_behavior]:
-                            self.active_labels[other_behavior] = False
-                            self.is_toggled_active[other_behavior] = False
-                            self.label_toggled.emit(other_behavior, False)
-                    self.is_stopping_toggle[behavior] = False
-                    self.active_labels[behavior] = True
-                    self.is_toggled_active[behavior] = True
-                    self.label_toggled.emit(behavior, True)
-                    self.update_frame_display()
-            elif self.label_key_mode == 'hold':
-                # Hold mode: set held behavior and active labels for continuous labeling
-                # Cancel any pending clear timer
-                if behavior in self.clear_timers:
-                    self.clear_timers[behavior].stop()
-                    del self.clear_timers[behavior]
-                self.held_behavior = behavior
-                self.active_labels[behavior] = True
-                # Apply to current frame
-                self.label_toggled.emit(behavior, True)
-                self.update_frame_display()
-            else:  # 'both' mode
-                # If this behavior is currently in toggle_active mode, this press means to deactivate it.
-                if self.is_toggled_active.get(behavior, False):
-                    self.is_stopping_toggle[behavior] = True
-                    self.is_toggled_active[behavior] = False
-                    self.active_labels[behavior] = False
-                    self.label_toggled.emit(behavior, False)
-                    self.update_frame_display()
-                else:
-                    # Otherwise, activate the label immediately (could be a hold or a new toggle)
-                    # First, deactivate all other behaviors
-                    for other_behavior in list(self.active_labels.keys()):
-                        if other_behavior != behavior and self.active_labels[other_behavior]:
-                            self.active_labels[other_behavior] = False
-                            self.is_toggled_active[other_behavior] = False
-                            self.label_toggled.emit(other_behavior, False)
-                    self.is_stopping_toggle[behavior] = False
-                    self.active_labels[behavior] = True
-                    self.label_toggled.emit(behavior, True)
-                    self.update_frame_display()
+                    # Second press: end range labeling
+                    start_frame = self.range_labeling_start[behavior]
+                    end_frame = self.current_frame
 
-                    # Start timer for long press detection
-                    if not self.hold_timers.get(behavior):
-                        self.hold_timers[behavior] = QTimer()
-                        self.hold_timers[behavior].setSingleShot(True)
-                        self.hold_timers[behavior].timeout.connect(lambda: self._on_long_press(behavior))
-                        self.hold_timers[behavior].start(self.hold_time)
-        else: # is_released
-            # Clear key held state
+                    # Apply the range label to actual annotations (CSV)
+                    from annotator_libs.annotation_logic import apply_range_label
+                    apply_range_label(self.annotations, behavior, start_frame, end_frame, self.available_behaviors, self.include_last_frame_in_range)
+
+                    # Clean up
+                    del self.range_labeling_active[behavior]
+                    del self.range_labeling_start[behavior]
+
+                    # Clear timeline range preview
+                    if self.timeline:
+                        self.timeline.clear_range_preview()
+
+            elif self.label_key_mode == 'hold':
+                # Hold mode: start range labeling
+                if not self.range_labeling_active.get(behavior, False):
+                    self.range_labeling_active[behavior] = True
+                    self.range_labeling_start[behavior] = self.current_frame
+                # Update timeline with range preview
+                if self.timeline:
+                    self.timeline.set_range_preview(behavior, self.current_frame, self.current_frame)
+
+            elif self.label_key_mode == 'both':
+                # Both mode: start timer to detect short vs long press
+                self.key_press_start_time[behavior] = time.time()
+                # Start a timer for long press detection
+                if behavior not in self.hold_timers:
+                    self.hold_timers[behavior] = QTimer(self)
+                    self.hold_timers[behavior].setSingleShot(True)
+                    self.hold_timers[behavior].timeout.connect(lambda: self._on_long_press(behavior))
+                self.hold_timers[behavior].start(self.hold_time)
+
+        else:  # is_released
             self.label_key_held[behavior] = False
 
-            # Calculate press duration
-            press_start_time = self.key_press_start_time.get(behavior, 0)
-            release_time = current_time
-            press_duration = release_time - press_start_time
-            was_stopping_toggle = self.is_stopping_toggle.get(behavior, False)
-            self.is_stopping_toggle[behavior] = False # Reset for next cycle
-
-            if self.label_key_mode == 'hold':
-                # Hold mode: start delayed clearing of held behavior and active labels
-                # This prevents spurious releases from stopping labeling
-                if not self.clear_timers.get(behavior):
-                    self.clear_timers[behavior] = QTimer()
-                    self.clear_timers[behavior].setSingleShot(True)
-                    self.clear_timers[behavior].timeout.connect(lambda: self._clear_hold_labels(behavior))
-                    self.clear_timers[behavior].start(100)  # 100ms delay
-            elif self.label_key_mode == 'toggle':
-                # Toggle mode: handled in keyPressEvent, nothing to do here
+            if self.label_key_mode == 'toggle':
+                # Toggle mode: do nothing on release
                 pass
-            else:  # 'both' mode
-                # Stop and clean up the hold timer
-                if behavior in self.hold_timers:
+
+            elif self.label_key_mode == 'hold':
+                # Hold mode: apply range labeling
+                if self.range_labeling_active.get(behavior, False):
+                    start_frame = self.range_labeling_start[behavior]
+                    end_frame = self.current_frame
+
+                    # Apply the range label to actual annotations (CSV)
+                    apply_range_label(self.annotations, behavior, start_frame, end_frame, self.available_behaviors, self.include_last_frame_in_range)
+
+                    # Clean up
+                    del self.range_labeling_active[behavior]
+                    del self.range_labeling_start[behavior]
+
+                    # Clear timeline range preview
+                    if self.timeline:
+                        self.timeline.clear_range_preview()
+
+                    # Start timer to clear held behavior after delay
+                    if behavior not in self.clear_timers:
+                        self.clear_timers[behavior] = QTimer(self)
+                        self.clear_timers[behavior].setSingleShot(True)
+                        self.clear_timers[behavior].timeout.connect(lambda: self._clear_hold_labels(behavior))
+                    self.clear_timers[behavior].start(100)  # Short delay
+
+            elif self.label_key_mode == 'both':
+                # Both mode: check if it was a short or long press
+                if behavior in self.hold_timers and self.hold_timers[behavior].isActive():
+                    # Timer still active = short press. This should behave like 'toggle' mode.
                     self.hold_timers[behavior].stop()
+                    if not self.range_labeling_active.get(behavior, False):
+                        # First short press: start range labeling
+                        self.range_labeling_active[behavior] = True
+                        self.range_labeling_start[behavior] = self.current_frame
+                        # Update timeline with range preview
+                        if self.timeline:
+                            self.timeline.set_range_preview(behavior, self.current_frame, self.current_frame)
+                    else:
+                        # Second short press: end range labeling
+                        start_frame = self.range_labeling_start[behavior]
+                        end_frame = self.current_frame
+
+                        # Apply the range label to actual annotations (CSV)
+                        apply_range_label(self.annotations, behavior, start_frame, end_frame, self.available_behaviors, self.include_last_frame_in_range)
+
+                        # Clean up
+                        del self.range_labeling_active[behavior]
+                        del self.range_labeling_start[behavior]
+
+                        # Clear timeline range preview
+                        if self.timeline:
+                            self.timeline.clear_range_preview()
+                else:
+                    # Timer expired = long press = apply range labeling
+                    if self.range_labeling_active.get(behavior, False):
+                        start_frame = self.range_labeling_start[behavior]
+                        end_frame = self.current_frame
+
+                        # Apply the range label to actual annotations (CSV)
+                        apply_range_label(self.annotations, behavior, start_frame, end_frame, self.available_behaviors, self.include_last_frame_in_range)
+
+                        # Clean up
+                        del self.range_labeling_active[behavior]
+                        del self.range_labeling_start[behavior]
+
+                        # Clear timeline range preview
+                        if self.timeline:
+                            self.timeline.clear_range_preview()
+
+                        # Start timer to clear held behavior after delay
+                        if behavior not in self.clear_timers:
+                            self.clear_timers[behavior] = QTimer(self)
+                            self.clear_timers[behavior].setSingleShot(True)
+                            self.clear_timers[behavior].timeout.connect(lambda: self._clear_hold_labels(behavior))
+                        self.clear_timers[behavior].start(100)  # Short delay
+
+                # Clean up timer
+                if behavior in self.hold_timers:
+                    self.hold_timers[behavior].deleteLater()
                     del self.hold_timers[behavior]
 
-                # Clear held_behavior if it was set for long press
-                if self.held_behavior == behavior:
-                    self.held_behavior = None
+            # Clean up press start time
+            if behavior in self.key_press_start_time:
+                del self.key_press_start_time[behavior]
 
-                if press_duration > self.hold_time:
-                    # If held for > hold_time ms, stop labeling.
-                    # This was a "hold" action, so is_toggled_active should be False.
-                    # Do not emit False to avoid removing the label from the current frame.
-                    self.active_labels[behavior] = False
-                    self.is_toggled_active[behavior] = False
-                else:
-                    # If pressed for <= hold_time ms, it's a tap to toggle.
-                    if was_stopping_toggle:
-                        # This press was meant to stop a toggle. keyPressEvent already handled deactivation.
-                        # No further action needed here.
-                        pass
-                    else:
-                        # This press was meant to *start* a toggle.
-                        self.is_toggled_active[behavior] = True
-                        self.active_labels[behavior] = True  # Label stays active
-                        self.label_toggled.emit(behavior, True)
+        # Update UI to show current state (including preview if active)
+        self.update_frame_display()
 
-            self.update_frame_display()
+    def _start_timeline_drag(self, start_frame):
+        """Handle the start of timeline dragging for range labeling"""
+        # Check if any label keys are currently held
+        active_behaviors = [b for b, held in self.label_key_held.items() if held]
+        if active_behaviors:
+            # Use the first active behavior for range labeling
+            behavior = active_behaviors[0]
+            # Only start range labeling if not already active (prevent overwriting existing start frame)
+            if not self.range_labeling_active.get(behavior, False):
+                self.range_labeling_active[behavior] = True
+                self.range_labeling_start[behavior] = start_frame
+                # Set timeline range preview
+                if self.timeline:
+                    self.timeline.set_range_preview(behavior, start_frame, self.current_frame)
+
+    def _end_timeline_drag(self, end_frame=None):
+        """Handle the end of timeline dragging for range labeling"""
+        from annotator_libs.annotation_logic import apply_range_label
+
+        # The user expects the end frame to be the current frame of the video player,
+        # not necessarily where the mouse was released on the timeline.
+        # So, we will always use self.current_frame as the end_frame for applying the label.
+        actual_end_frame = self.current_frame
+
+        # Apply range labels for any active range labeling
+        for behavior, is_active in self.range_labeling_active.items():
+            if is_active:
+                start_frame = self.range_labeling_start[behavior]
+
+                # Apply the range label to actual annotations (CSV)
+                apply_range_label(self.annotations, behavior, start_frame, actual_end_frame, self.available_behaviors, self.include_last_frame_in_range)
+
+                # Clean up range labeling state
+                del self.range_labeling_active[behavior]
+                del self.range_labeling_start[behavior]
+
+                # Clear timeline range preview
+                if self.timeline:
+                    self.timeline.clear_range_preview()
+
+                # Only handle one behavior at a time
+                break
+
+        # Update UI
+        self.update_frame_display()

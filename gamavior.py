@@ -8,9 +8,9 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayo
                               QWidget, QPushButton, QLabel, QFileDialog, QComboBox,
                               QMessageBox, QInputDialog, QDialog,
                               QFormLayout, QKeySequenceEdit, QDialogButtonBox, QSpinBox,
-                              QGroupBox, QTabWidget, QCheckBox, QSplitter, QListWidget, QListWidgetItem, QMenu) # Added QCheckBox, QSplitter, QListWidget, QListWidgetItem, QMenu
+                              QGroupBox, QTabWidget, QCheckBox, QSplitter, QListWidget, QListWidgetItem, QMenu, QScrollArea) # Added QCheckBox, QSplitter, QListWidget, QListWidgetItem, QMenu, QScrollArea
 from PySide6.QtCore import Qt, QTimer, QSettings, QCoreApplication, Signal
-from PySide6.QtGui import QKeySequence, QFont
+from PySide6.QtGui import QKeySequence, QFont, QPainter, QColor, QPen, QBrush
 from PySide6.QtSvgWidgets import QSvgWidget
 
 # Suppress pygame messages
@@ -125,7 +125,7 @@ class WelcomeDialog(QDialog):
             layout.addWidget(separator2)
 
         # New video button
-        select_new_btn = QPushButton("Select New Video")
+        select_new_btn = QPushButton("Select In Files")
         select_new_btn.setFixedWidth(200)
         select_new_btn.clicked.connect(self.select_new_video)
         layout.addWidget(select_new_btn, alignment=Qt.AlignCenter)
@@ -246,22 +246,27 @@ class VideoAnnotator(QMainWindow):
 
 
         # Video player
-        self.video_player = VideoPlayer()
+        # Pass the timeline widget to the VideoPlayer so it can update the preview
+        self.timeline = TimelineWidget()
+        self.video_player = VideoPlayer(self.timeline)
         self.video_player.frame_changed.connect(self.on_frame_changed)
         self.video_player.label_toggled.connect(self.on_label_state_changed)
         self.video_player.remove_labels.connect(self.remove_labels_from_current_frame) # Re-enabled for debugging
         self.video_player.check_label_removal.connect(self.on_check_label_removal)
         left_panel.addWidget(self.video_player, stretch=1)  # Give video player priority
 
+        # Timeline
+        left_panel.addWidget(self.timeline, stretch=0)  # Timeline takes minimum space
+
+        # Connect timeline signals to video player
+        self.timeline.frame_clicked.connect(self.video_player.goto_frame)
+        self.timeline.drag_started.connect(self.video_player._start_timeline_drag)
+        self.timeline.drag_ended.connect(self.video_player._end_timeline_drag)
+
         # Timer for gamepad polling
         self.gamepad_timer = QTimer(self)
         self.gamepad_timer.timeout.connect(self.video_player.process_gamepad_input)
         self.gamepad_timer.start(50) # Poll every 50ms (20 FPS)
-
-        # Timeline
-        self.timeline = TimelineWidget()
-        self.timeline.frame_clicked.connect(self.video_player.goto_frame)
-        left_panel.addWidget(self.timeline, stretch=0)  # Timeline takes minimum space
 
         # Right panel - behavior buttons
         right_widget = QWidget()
@@ -272,13 +277,13 @@ class VideoAnnotator(QMainWindow):
         # Video file selection
         file_layout = QHBoxLayout()
         self.video_path_label = QLabel("No video selected")
-        load_video_btn = QPushButton("Load Video")
+        load_video_btn = QPushButton("Load")
         load_video_btn.clicked.connect(self.load_video_dialog)
         file_layout.addWidget(QLabel("Video:"))
         file_layout.addWidget(self.video_path_label)
         file_layout.addWidget(load_video_btn)
         
-        self.load_next_video_btn = QPushButton("Load Next Video")
+        self.load_next_video_btn = QPushButton("Load Next")
         self.load_next_video_btn.clicked.connect(self.load_next_video_in_main_ui)
         file_layout.addWidget(self.load_next_video_btn)
         
@@ -346,10 +351,10 @@ class VideoAnnotator(QMainWindow):
 
         # Settings menu
         settings_menu = menubar.addMenu('Settings')
-        input_settings_action = settings_menu.addAction('Input Settings')
-        input_settings_action.triggered.connect(self.show_input_settings_dialog)
         general_settings_action = settings_menu.addAction('General Settings')
         general_settings_action.triggered.connect(self.show_general_settings_dialog)
+        input_settings_action = settings_menu.addAction('Input Settings')
+        input_settings_action.triggered.connect(self.show_input_settings_dialog)
 
 
     def load_settings(self):
@@ -357,9 +362,11 @@ class VideoAnnotator(QMainWindow):
         # self.settings is already initialized in __init__
         self.auto_save_enabled = self.settings.value('auto_save_enabled', False, bool)
         self.auto_save_interval = self.settings.value('auto_save_interval', 3, int) # Default 3 minutes
-        self.hold_time = self.settings.value('hold_time', 50, int) # Default 50 ms
+        self.hold_time = self.settings.value('hold_time', 100, int) # Default 100 ms
         self.label_key_mode = self.settings.value('label_key_mode', 'both', str) # Default both modes
         self.show_frame_preview_bars = self.settings.value('show_frame_preview_bars', True, bool) # Default enabled
+        self.include_last_frame_in_range = self.settings.value('include_last_frame_in_range', True, bool) # Default include last frame
+        self.show_statistics_popup = self.settings.value('show_statistics_popup', True, bool) # Default enabled
         self.last_video_path = self.settings.value('last_video_path', '', str)
         # Load frame positions as JSON string and parse to dict
         frame_positions_json = self.settings.value('last_frame_positions', '{}', str)
@@ -381,6 +388,8 @@ class VideoAnnotator(QMainWindow):
         self.settings.setValue('hold_time', self.hold_time)
         self.settings.setValue('label_key_mode', self.label_key_mode)
         self.settings.setValue('show_frame_preview_bars', self.show_frame_preview_bars)
+        self.settings.setValue('include_last_frame_in_range', self.include_last_frame_in_range)
+        self.settings.setValue('show_statistics_popup', self.show_statistics_popup)
         self.settings.setValue('last_video_path', self.last_video_path)
         # Save frame positions as JSON string
         self.settings.setValue('last_frame_positions', json.dumps(self.last_frame_positions))
@@ -635,6 +644,16 @@ class VideoAnnotator(QMainWindow):
         self.show_frame_preview_bars_checkbox.setChecked(self.show_frame_preview_bars)
         form_layout.addRow("UI:", self.show_frame_preview_bars_checkbox)
 
+        # Include last frame in range checkbox
+        self.include_last_frame_checkbox = QCheckBox("Include last selected frame in range")
+        self.include_last_frame_checkbox.setChecked(self.include_last_frame_in_range)
+        form_layout.addRow("Labeling:", self.include_last_frame_checkbox)
+
+        # Show statistics popup checkbox
+        self.show_statistics_popup_checkbox = QCheckBox("Show statistics popup when loading next video")
+        self.show_statistics_popup_checkbox.setChecked(self.show_statistics_popup)
+        form_layout.addRow("UI:", self.show_statistics_popup_checkbox)
+
         layout.addLayout(form_layout)
 
         # Buttons
@@ -648,10 +667,13 @@ class VideoAnnotator(QMainWindow):
         layout.addWidget(buttons)
 
         if dialog.exec() == QDialog.Accepted:
+            self.hold_time = self.hold_time_spin.value()
             self.auto_save_enabled = self.auto_save_checkbox.isChecked()
             self.auto_save_interval = self.auto_save_interval_spin.value()
             self.label_key_mode = self.label_key_mode_combo.currentData()
             self.show_frame_preview_bars = self.show_frame_preview_bars_checkbox.isChecked()
+            self.include_last_frame_in_range = self.include_last_frame_checkbox.isChecked()
+            self.show_statistics_popup = self.show_statistics_popup_checkbox.isChecked()
             self.save_settings() # Save general settings
 
             # Restart auto-save timer with new settings
@@ -665,8 +687,15 @@ class VideoAnnotator(QMainWindow):
             # Update VideoPlayer with new frame preview bars setting
             self.video_player.set_show_overlay_bars(self.show_frame_preview_bars)
 
+            # Update VideoPlayer with new include last frame setting
+            self.video_player.set_include_last_frame_in_range(self.include_last_frame_in_range)
+
+            # Update VideoPlayer with the new hold time
+            self.video_player.update_input_settings({'hold_time': self.hold_time})
+
     def restore_default_general_settings(self):
         """Restore default general settings"""
+        self.hold_time_spin.setValue(100) # Default 100 ms
         self.auto_save_checkbox.setChecked(False)
         self.auto_save_interval_spin.setValue(3) # Default 3 minutes
         # Set combo box to "both" mode
@@ -702,6 +731,7 @@ class VideoAnnotator(QMainWindow):
         return {
             'frame_step': getattr(self, '_frame_step', 1),
             'shift_skip': getattr(self, '_shift_skip', 10),
+            'hold_time': self.hold_time, # Add hold_time here
             'deadzone': getattr(self, '_deadzone', 10),
             'joystick_sensitivity': getattr(self, '_joystick_sensitivity', 5),
             'frame_skip': getattr(self, '_frame_skip', 1),
@@ -899,6 +929,9 @@ class VideoAnnotator(QMainWindow):
         if self.video_path:
             self.last_frame_positions[self.video_path] = self.video_player.current_frame
 
+        # Record video load time for statistics
+        self.video_load_time = time.time()
+
         if self.video_player.load_video(file_path):
             self.video_path = file_path
             self.video_path_label.setText(os.path.basename(file_path))
@@ -958,12 +991,18 @@ class VideoAnnotator(QMainWindow):
             QMessageBox.warning(self, "Error", "No video currently loaded or path does not exist.")
             return
 
+        # Show statistics popup if enabled
+        if self.show_statistics_popup:
+            statistics = self.calculate_statistics()
+            dialog = StatisticsDialog(statistics, self)
+            dialog.exec()
+
         current_dir = os.path.dirname(self.video_path)
         video_files = []
         for f in os.listdir(current_dir):
             if f.lower().endswith(('.mp4', '.avi', '.mov', '.mkv', '.wmv')):
                 video_files.append(os.path.join(current_dir, f))
-        
+
         video_files.sort() # Sort alphabetically
 
         if not video_files:
@@ -983,7 +1022,7 @@ class VideoAnnotator(QMainWindow):
         except ValueError:
             QMessageBox.warning(self, "Error", "Current video not found in its directory. Please select a new video.")
             return
-                
+
             self.loading_screen.set_loading_text("Loading video...")
             self.loading_screen.raise_() # Bring to front
             QCoreApplication.processEvents() # Process events to ensure loading screen is shown
@@ -1185,6 +1224,79 @@ class VideoAnnotator(QMainWindow):
         self.set_controls_enabled(True)
         self.video_player.setFocus() # Ensure video player has focus for immediate key input
         self.loading_screen.hide() # Hide loading screen
+
+    def calculate_statistics(self):
+        """Calculate annotation statistics for the current video"""
+        statistics = {}
+
+        # Calculate video duration
+        if hasattr(self.video_player, 'frame_rate') and self.video_player.frame_rate > 0:
+            video_duration = self.video_player.total_frames / self.video_player.frame_rate
+            statistics['video_duration'] = video_duration
+        else:
+            statistics['video_duration'] = 0
+
+        # Calculate annotation time (time since video was loaded)
+        if hasattr(self, 'video_load_time') and self.video_load_time:
+            annotation_time = time.time() - self.video_load_time
+            statistics['annotation_time'] = annotation_time
+        else:
+            statistics['annotation_time'] = 0
+
+        # Calculate annotation speed (video duration / annotation time)
+        if statistics['annotation_time'] > 0:
+            statistics['annotation_speed'] = statistics['video_duration'] / statistics['annotation_time']
+        else:
+            statistics['annotation_speed'] = 0
+
+        # Calculate behavior statistics
+        behavior_stats = {}
+        for behavior in self.behavior_buttons.behaviors:
+            # Count occurrences (blocks) and find max duration
+            block_count = 0
+            total_frames = 0
+            max_duration = 0
+            current_start = None
+
+            for frame in range(self.video_player.total_frames):
+                if self.annotations.get(frame) == behavior:
+                    if current_start is None:
+                        current_start = frame
+                        block_count += 1
+                    total_frames += 1
+                else:
+                    if current_start is not None:
+                        # Calculate duration of this segment
+                        duration = (frame - current_start) / self.video_player.frame_rate
+                        max_duration = max(max_duration, duration)
+                        current_start = None
+
+            # Check if behavior continues to end of video
+            if current_start is not None:
+                duration = (self.video_player.total_frames - current_start) / self.video_player.frame_rate
+                max_duration = max(max_duration, duration)
+
+            behavior_stats[behavior] = {
+                'block_count': block_count,
+                'total_frames': total_frames,
+                'max_duration': max_duration
+            }
+
+        # Calculate overall labeling statistics
+        total_labeled_frames = sum(stats['total_frames'] for stats in behavior_stats.values())
+        total_frames = self.video_player.total_frames
+        labeled_percentage = (total_labeled_frames / total_frames) * 100 if total_frames > 0 else 0
+        unlabeled_percentage = 100 - labeled_percentage
+
+        statistics['labeling_stats'] = {
+            'total_labeled_frames': total_labeled_frames,
+            'total_frames': total_frames,
+            'labeled_percentage': labeled_percentage,
+            'unlabeled_percentage': unlabeled_percentage
+        }
+
+        statistics['behaviors'] = behavior_stats
+        return statistics
 
     def show_startup_dialog(self):
         """Show welcome dialog to choose video"""
@@ -1446,6 +1558,265 @@ class ControllerAutomapDialog(QDialog):
     def _start_polling_after_delay(self):
         """Starts the gamepad polling after the initial delay."""
         self.gamepad_timer.start(50) # Start polling
+
+
+class BehaviorChart(QWidget):
+    """Custom widget to display a bar chart of behavior frame counts"""
+
+    def __init__(self, behavior_data, behavior_colors, parent=None):
+        super().__init__(parent)
+        self.behavior_data = behavior_data
+        self.behavior_colors = behavior_colors
+        self.setMinimumHeight(200)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        # Get dimensions
+        width = self.width()
+        height = self.height()
+
+        if not self.behavior_data:
+            return
+
+        # Find max frames for scaling
+        max_frames = max(stats['total_frames'] for stats in self.behavior_data.values()) if self.behavior_data else 1
+
+        # Chart margins
+        margin_left = 60
+        margin_right = 20
+        margin_top = 60
+        margin_bottom = 40
+
+        chart_width = width - margin_left - margin_right
+        chart_height = height - margin_top - margin_bottom
+
+        # Draw title
+        title_font = QFont()
+        title_font.setBold(True)
+        painter.setFont(title_font)
+        painter.drawText(0, 15, width, 20, Qt.AlignCenter, "Behavior Frame Counts")
+
+        # Draw bars
+        bar_width = chart_width / len(self.behavior_data) if self.behavior_data else 0
+        x = margin_left
+
+        for behavior, stats in self.behavior_data.items():
+            frames = stats['total_frames']
+            if max_frames > 0:
+                bar_height = (frames / max_frames) * chart_height
+            else:
+                bar_height = 0
+
+            # Get color for behavior
+            color = self.behavior_colors.get(behavior, QColor(100, 100, 100))
+            painter.setBrush(QBrush(color))
+            painter.setPen(QPen(color.darker(), 1))
+
+            # Draw bar
+            bar_x = x
+            bar_y = height - margin_bottom - bar_height
+            painter.drawRect(int(bar_x), int(bar_y), int(bar_width - 5), int(bar_height))
+
+            # Draw label
+            label_font = QFont()
+            label_font.setPointSize(8)
+            painter.setFont(label_font)
+            painter.setPen(QPen(Qt.black))
+
+            # Rotate and draw behavior name
+            painter.save()
+            painter.translate(bar_x + bar_width/2, height - margin_bottom + 15)
+            painter.rotate(-45)
+            painter.drawText(-30, 0, 60, 20, Qt.AlignCenter, behavior[:10])  # Truncate long names
+            painter.restore()
+
+            # Draw frame count above bar
+            painter.setPen(QPen(Qt.black))
+            painter.drawText(int(bar_x), int(bar_y - 5), int(bar_width), 20, Qt.AlignCenter, str(frames))
+
+            x += bar_width
+
+        # Draw axes
+        painter.setPen(QPen(Qt.black, 2))
+        # Y-axis
+        painter.drawLine(margin_left, margin_top, margin_left, height - margin_bottom)
+        # X-axis
+        painter.drawLine(margin_left, height - margin_bottom, width - margin_right, height - margin_bottom)
+
+        # Draw Y-axis labels
+        painter.setFont(QFont())
+        for i in range(0, max_frames + 1, max(1, max_frames // 5)):
+            y_pos = height - margin_bottom - (i / max_frames) * chart_height if max_frames > 0 else height - margin_bottom
+            painter.drawText(5, int(y_pos - 5), margin_left - 10, 20, Qt.AlignRight, str(i))
+
+
+class PieChart(QWidget):
+    """Custom widget to display a pie chart of labeling statistics"""
+
+    def __init__(self, labeling_stats, parent=None):
+        super().__init__(parent)
+        self.labeling_stats = labeling_stats
+        self.setMinimumHeight(250)
+        self.setMinimumWidth(250)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        # Get dimensions
+        width = self.width()
+        height = self.height()
+
+        if not self.labeling_stats or self.labeling_stats['total_frames'] == 0:
+            return
+
+        # Chart dimensions
+        center_x = width // 2
+        center_y = height // 2
+        radius = min(width, height) // 2 - 40
+
+        # Data
+        labeled_percentage = self.labeling_stats['labeled_percentage']
+        unlabeled_percentage = self.labeling_stats['unlabeled_percentage']
+
+        # Colors
+        labeled_color = QColor(100, 200, 100)  # Green for labeled
+        unlabeled_color = QColor(200, 100, 100)  # Red for unlabeled
+
+        # Draw title
+        title_font = QFont()
+        title_font.setBold(True)
+        painter.setFont(title_font)
+        painter.drawText(0, 15, width, 20, Qt.AlignCenter, "Frame Labeling Overview")
+
+        # Draw pie chart
+        start_angle = 0
+
+        # Labeled portion
+        if labeled_percentage > 0:
+            labeled_angle = int(labeled_percentage * 16 * 3.6)  # Convert to 16ths of degree
+            painter.setBrush(QBrush(labeled_color))
+            painter.setPen(QPen(labeled_color.darker(), 2))
+            painter.drawPie(center_x - radius, center_y - radius, radius * 2, radius * 2, start_angle, labeled_angle)
+            start_angle += labeled_angle
+
+        # Unlabeled portion
+        if unlabeled_percentage > 0:
+            unlabeled_angle = int(unlabeled_percentage * 16 * 3.6)  # Convert to 16ths of degree
+            painter.setBrush(QBrush(unlabeled_color))
+            painter.setPen(QPen(unlabeled_color.darker(), 2))
+            painter.drawPie(center_x - radius, center_y - radius, radius * 2, radius * 2, start_angle, unlabeled_angle)
+
+        # Draw legend
+        legend_x = 20
+        legend_y = height - 60
+
+        # Labeled legend
+        painter.setBrush(QBrush(labeled_color))
+        painter.setPen(QPen(Qt.black, 1))
+        painter.drawRect(legend_x, legend_y, 15, 15)
+        painter.setPen(QPen(Qt.black))
+        painter.setFont(QFont())
+        painter.drawText(legend_x + 20, legend_y + 12, f"Labeled: {labeled_percentage:.1f}%")
+
+        # Unlabeled legend
+        painter.setBrush(QBrush(unlabeled_color))
+        painter.setPen(QPen(Qt.black, 1))
+        painter.drawRect(legend_x, legend_y + 20, 15, 15)
+        painter.setPen(QPen(Qt.black))
+        painter.drawText(legend_x + 20, legend_y + 32, f"Unlabeled: {unlabeled_percentage:.1f}%")
+
+
+class StatisticsDialog(QDialog):
+    """Dialog to display annotation statistics"""
+
+    def __init__(self, statistics, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Annotation Statistics")
+        self.setModal(True)
+        self.statistics = statistics
+        # Get behavior colors from parent and convert to QColor
+        self.behavior_colors = {}
+        if parent and hasattr(parent, 'behavior_buttons'):
+            for behavior in parent.behavior_buttons.behaviors:
+                color_str = parent.behavior_buttons.get_behavior_color(behavior)
+                if isinstance(color_str, str):
+                    # Convert hex string to QColor
+                    if color_str.startswith('#'):
+                        self.behavior_colors[behavior] = QColor(color_str)
+                    else:
+                        self.behavior_colors[behavior] = QColor(100, 100, 100)  # Default gray
+                else:
+                    self.behavior_colors[behavior] = color_str
+        self.setup_ui()
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+
+        # Title
+        # Create scroll area for statistics
+        scroll_area = QScrollArea()
+        scroll_widget = QWidget()
+        scroll_layout = QVBoxLayout(scroll_widget)
+
+        # Pie chart for labeling overview
+        if 'labeling_stats' in self.statistics and self.statistics['labeling_stats']['total_frames'] > 0:
+            pie_group = QGroupBox("Labeling Overview")
+            pie_layout = QVBoxLayout(pie_group)
+            pie_chart = PieChart(self.statistics['labeling_stats'])
+            pie_layout.addWidget(pie_chart)
+            scroll_layout.addWidget(pie_group)
+
+        # Behavior chart
+        if 'behaviors' in self.statistics and self.statistics['behaviors']:
+            chart_group = QGroupBox("Behavior Frame Distribution")
+            chart_layout = QVBoxLayout(chart_group)
+            chart = BehaviorChart(self.statistics['behaviors'], self.behavior_colors)
+            chart_layout.addWidget(chart)
+            scroll_layout.addWidget(chart_group)
+
+        # Behavior statistics
+        if 'behaviors' in self.statistics and self.statistics['behaviors']:
+            behavior_group = QGroupBox("Behavior Statistics")
+            behavior_layout = QVBoxLayout(behavior_group)
+
+            for behavior, stats in self.statistics['behaviors'].items():
+                behavior_label = QLabel(f"{behavior}: {stats['block_count']} blocks, max duration: {stats['max_duration']:.2f}s")
+                behavior_layout.addWidget(behavior_label)
+
+            scroll_layout.addWidget(behavior_group)
+
+        # Timing statistics
+        timing_group = QGroupBox("Timing Statistics")
+        timing_layout = QVBoxLayout(timing_group)
+
+        if 'annotation_time' in self.statistics:
+            time_label = QLabel(f"Annotation time: {self.statistics['annotation_time']:.2f} seconds")
+            timing_layout.addWidget(time_label)
+
+        if 'video_duration' in self.statistics:
+            duration_label = QLabel(f"Video duration: {self.statistics['video_duration']:.2f} seconds")
+            timing_layout.addWidget(duration_label)
+
+        if 'annotation_speed' in self.statistics:
+            speed_label = QLabel(f"Annotation speed: {self.statistics['annotation_speed']:.2f}x real-time")
+            timing_layout.addWidget(speed_label)
+
+        scroll_layout.addWidget(timing_group)
+
+        scroll_area.setWidget(scroll_widget)
+        scroll_area.setWidgetResizable(True)
+        layout.addWidget(scroll_area)
+
+        # Buttons
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok, Qt.Horizontal, self)
+        buttons.accepted.connect(self.accept)
+        layout.addWidget(buttons)
+
+        self.setMinimumWidth(600)
+        self.setMinimumHeight(500)
 
 
 if __name__ == "__main__":
