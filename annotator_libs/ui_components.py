@@ -8,7 +8,7 @@ import os
 class BehaviorButtonWidget(QWidget):
     """Widget containing a behavior button with preview bars"""
 
-    clicked = Signal()  # Signal emitted when button is clicked
+    clicked = Signal()
 
     def __init__(self, text, behavior, parent=None):
         super().__init__(parent)
@@ -64,9 +64,9 @@ class BehaviorButtons(QWidget):
         layout.setContentsMargins(5, 5, 5, 5)
         layout.setSpacing(5)
 
-        # Behaviors group box
-        behaviors_group = QGroupBox("Behaviors")
-        behaviors_group.setStyleSheet("""
+        # Labels group box
+        labels_group = QGroupBox("Labels")
+        labels_group.setStyleSheet("""
             QGroupBox {
                 font-weight: bold;
                 border: 2px solid #cccccc;
@@ -80,9 +80,9 @@ class BehaviorButtons(QWidget):
                 padding: 0 5px 0 5px;
             }
         """)
-        behaviors_layout = QVBoxLayout(behaviors_group)
-        behaviors_layout.setContentsMargins(5, 5, 5, 5)
-        behaviors_layout.setSpacing(5)
+        labels_layout = QVBoxLayout(labels_group)
+        labels_layout.setContentsMargins(5, 5, 5, 5)
+        labels_layout.setSpacing(5)
 
         # Scroll area for behaviors
         self.scroll_area = QScrollArea()
@@ -100,12 +100,12 @@ class BehaviorButtons(QWidget):
         self.scroll_area.setWidget(scroll_widget)
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setMinimumHeight(150)
-        behaviors_layout.addWidget(self.scroll_area)
+        labels_layout.addWidget(self.scroll_area)
 
-        layout.addWidget(behaviors_group)
+        layout.addWidget(labels_group)
 
         # Add/Remove buttons in a separate group
-        management_group = QGroupBox("Manage Behaviors")
+        management_group = QGroupBox("Manage Labels")
         management_group.setStyleSheet("""
             QGroupBox {
                 font-weight: bold;
@@ -124,7 +124,7 @@ class BehaviorButtons(QWidget):
         management_layout.setContentsMargins(5, 5, 5, 5)
         management_layout.setSpacing(10)
 
-        self.add_btn = QPushButton("Add Behavior")
+        self.add_btn = QPushButton("Add Label")
         self.add_btn.setStyleSheet("""
             QPushButton {
                 padding: 8px 16px;
@@ -143,7 +143,7 @@ class BehaviorButtons(QWidget):
         """)
         self.add_btn.clicked.connect(self.add_behavior)
 
-        self.remove_btn = QPushButton("Remove Behavior")
+        self.remove_btn = QPushButton("Remove Label")
         self.remove_btn.setStyleSheet("""
             QPushButton {
                 padding: 8px 16px;
@@ -186,12 +186,12 @@ class BehaviorButtons(QWidget):
             return
 
         # Calculate number of columns based on available width
-        available_width = self.scroll_area.viewport().width() - 20  # Subtract margins
+        available_width = self.scroll_area.viewport().width() - 20
         if available_width <= 0:
-            available_width = 300  # Default fallback
+            available_width = 300
 
-        # Estimate button width (rough estimate)
-        estimated_btn_width = 120  # Minimum button width
+        # Estimate button width
+        estimated_btn_width = 120
         num_columns = max(1, available_width // estimated_btn_width)
 
         # Add buttons to grid
@@ -201,7 +201,7 @@ class BehaviorButtons(QWidget):
             btn_widget = BehaviorButtonWidget(f"{i+1}. {behavior}", behavior, self)
 
             # Set button color based on behavior
-            color = self.behavior_colors.get(behavior, "#CCCCCC")  # Default gray
+            color = self.behavior_colors.get(behavior, "#CCCCCC")
             button_style = f"""
                 QPushButton {{
                     background-color: {color};
@@ -255,7 +255,7 @@ class BehaviorButtons(QWidget):
         """Toggle a behavior label"""
         self.behavior_toggled.emit(behavior)
 
-    def get_selected_behavior(self):
+    def get_selected_label(self):
         """Get currently selected behavior"""
         for btn in self.buttons:
             if btn.button.isChecked():
@@ -268,11 +268,11 @@ class BehaviorButtons(QWidget):
 
     def add_behavior(self):
         """Add a new behavior"""
-        name, ok = QInputDialog.getText(self, "Add Behavior", "Enter behavior name:")
+        name, ok = QInputDialog.getText(self, "Add Label", "Enter label name:")
         if ok and name.strip():
             name = name.strip()
             if name in self.behaviors:
-                QMessageBox.warning(self, "Error", "Behavior already exists")
+                QMessageBox.warning(self, "Error", "Label already exists")
                 return
             # Assign a random color
             import random
@@ -285,37 +285,37 @@ class BehaviorButtons(QWidget):
     def remove_behavior(self):
         """Remove a behavior - show list to choose from"""
         if not self.behaviors:
-            QMessageBox.warning(self, "Error", "No behaviors to remove")
+            QMessageBox.warning(self, "Error", "No label to remove")
             return
 
         # Use combo box for ergonomic selection
-        selected_behavior, ok = QInputDialog.getItem(
+        selected_label, ok = QInputDialog.getItem(
             self,
-            "Remove Behavior",
-            "Select behavior to remove:",
+            "Remove Label",
+            "Select label to remove:",
             self.behaviors,
-            0,  # default selection
+            0,  # default
             False  # not editable
         )
 
         if not ok:
             return
 
-        if QMessageBox.question(self, "Confirm", f"Remove behavior '{selected_behavior}'? This will delete all labels of this behavior for this video") == QMessageBox.Yes:
-            self.behaviors.remove(selected_behavior)
-            if selected_behavior in self.behavior_colors:
-                del self.behavior_colors[selected_behavior]
+        if QMessageBox.question(self, "Confirm", f"Remove label '{selected_label}'? This will delete all instances of this label for this video") == QMessageBox.Yes:
+            self.behaviors.remove(selected_label)
+            if selected_label in self.behavior_colors:
+                del self.behavior_colors[selected_label]
             self.load_behaviors(self.behaviors)
-            self.behavior_removed.emit(selected_behavior)
+            self.behavior_removed.emit(selected_label)
 
 
 
 class TimelineWidget(QWidget):
     """Widget showing video timeline with zoom and click functionality"""
 
-    frame_clicked = Signal(int)  # Signal emitted when timeline is clicked
-    drag_started = Signal(int)  # Signal emitted when timeline drag starts (start_frame)
-    drag_ended = Signal(int)  # Signal emitted when timeline drag ends (final_frame)
+    frame_clicked = Signal(int)
+    drag_started = Signal(int)
+    drag_ended = Signal(int)
 
     def __init__(self):
         super().__init__()
@@ -347,7 +347,7 @@ class TimelineWidget(QWidget):
         # Range labeling preview state
         self.preview_behavior = None
         self.preview_start_frame = -1
-        self.preview_end_frame = -1 # This will be the current_frame during drag
+        self.preview_end_frame = -1 # Current_frame during drag
 
     def set_annotations(self, annotations, behavior_colors):
         """Set annotations and behavior colors for display"""
@@ -385,7 +385,7 @@ class TimelineWidget(QWidget):
         # Clamp zoom level
         new_zoom = max(self.min_zoom, min(self.max_zoom, new_zoom))
 
-        if abs(new_zoom - self.zoom_level) > 0.001:  # Only update if significant change
+        if abs(new_zoom - self.zoom_level) > 0.001:
             # Adjust scroll offset to keep frame at mouse position
             self.zoom_level = new_zoom
             self.scroll_offset = frame_at_mouse - (mouse_x / self.get_pixels_per_frame())
@@ -399,7 +399,7 @@ class TimelineWidget(QWidget):
         if event.button() == Qt.LeftButton and self.total_frames > 0:
             self.is_dragging = True
             self.last_mouse_x = event.position().x()
-            self.drag_start_frame = self.current_frame  # Store the frame where dragging started
+            self.drag_start_frame = self.current_frame  # Store frame where dragging started
 
             # Emit signal for drag start
             self.drag_started.emit(self.drag_start_frame)
@@ -629,11 +629,11 @@ class LoadingScreen(QWidget):
     A loading screen widget that displays a mouse logo SVG and a loading bar,
     both animating from left to right.
     """
-    def __init__(self, parent=None, svg_path="mouse-logo.svg"):
+    def __init__(self, parent=None, svg_path="assets/mouse-logo.svg"):
         super().__init__(parent)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setStyleSheet("background-color: rgba(0, 0, 0, 200);") # Dark semi-transparent background
-        self.setWindowFlags(Qt.FramelessWindowHint) # No window frame
+        self.setStyleSheet("background-color: rgba(0, 0, 0, 200);")
+        self.setWindowFlags(Qt.FramelessWindowHint)
 
         self.svg_path = svg_path
         self.mouse_logo = QPixmap()
@@ -643,7 +643,7 @@ class LoadingScreen(QWidget):
         self.loading_text = "Loading video..."
 
         self.animation = QPropertyAnimation(self, b"animation_progress")
-        self.animation.setDuration(1500) # 1.5 seconds for one full animation cycle
+        self.animation.setDuration(1500)
         self.animation.setEasingCurve(QEasingCurve.Linear)
         self.animation.setStartValue(0.0)
         self.animation.setEndValue(1.0)
@@ -654,8 +654,7 @@ class LoadingScreen(QWidget):
     def load_svg(self):
         """Loads the SVG file and converts it to a QPixmap."""
         if os.path.exists(self.svg_path):
-            # For SVGs, QPixmap can load them directly and scale them.
-            # We'll load it at a reasonable size and then scale it further in paintEvent if needed.
+            # QPixmap loading svg
             self.mouse_logo.load(self.svg_path)
             # Convert to a white-filled version
             if not self.mouse_logo.isNull():
@@ -716,15 +715,11 @@ class LoadingScreen(QWidget):
             painter.drawPixmap(svg_x, svg_y, svg_scaled)
             painter.setClipping(False) # Disable clipping
 
-            # Draw the outline of the SVG (optional, for better visibility)
-            # This part is tricky with QPixmap. A better approach for outline would be to
-            # load the SVG as QPicture and draw paths, but for simplicity, we'll just draw the filled part.
-
         # Draw loading bar
         bar_height = 20
         bar_width = width * 0.6
         bar_x = (width - bar_width) // 2
-        bar_y = (height // 2) + 50 # Below the SVG
+        bar_y = (height // 2) + 50
 
         # Draw loading bar background
         painter.setPen(QPen(Qt.white, 2))

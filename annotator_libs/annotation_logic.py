@@ -1,6 +1,6 @@
 import os
 import pandas as pd
-from PySide6.QtWidgets import QMessageBox, QStatusBar # Import QStatusBar
+from PySide6.QtWidgets import QMessageBox, QStatusBar
 
 
 def load_annotations_from_csv(video_path, behaviors, parent=None):
@@ -11,7 +11,7 @@ def load_annotations_from_csv(video_path, behaviors, parent=None):
     if os.path.exists(csv_path):
         try:
             df = pd.read_csv(csv_path)
-            behaviors_in_csv = df.columns.tolist()[1:]  # Skip 'Frames' column
+            behaviors_in_csv = df.columns.tolist()[1:]
 
             # Check for behavior mismatches
             template_behaviors = set(behaviors)
@@ -26,17 +26,16 @@ def load_annotations_from_csv(video_path, behaviors, parent=None):
                 if synced_df is not None:
                     df = synced_df
                     behaviors_in_csv = df.columns.tolist()[1:]
-                    # Save the synced CSV
                     df.to_csv(csv_path, index=False)
                 else:
                     # User chose not to sync, return empty annotations
                     return annotations
 
-            # Load annotations - take the first behavior that is 1
+            # Load annotations
             for idx, row in df.iterrows():
                 frame = int(row['Frames']) - 1  # 0-based
                 for b in behaviors_in_csv:
-                    if b in behaviors and row[b] == 1:  # Only include behaviors that are in template
+                    if b in behaviors and row[b] == 1: 
                         annotations[frame] = b
                         break  # Only take the first one
 
@@ -55,7 +54,7 @@ def sync_video_csv_with_template(df, template_behaviors, csv_path, parent=None):
     new_in_template = template_behaviors_set - csv_behaviors_set
     missing_in_template = csv_behaviors_set - template_behaviors_set
 
-    # Notify user about mismatches
+    # Notify about mismatches
     messages = []
     if new_in_template:
         messages.append(f"New behaviors in template: {', '.join(sorted(new_in_template))}")
@@ -85,7 +84,7 @@ def sync_video_csv_with_template(df, template_behaviors, csv_path, parent=None):
             QMessageBox.information(parent, "Behavior Mismatch", message + "Proceeding with sync.")
             hide_missing = False
     else:
-        return df  # No changes needed
+        return df 
 
     # Create new dataframe with template behaviors
     synced_data = {'Frames': df['Frames'].copy()}
@@ -121,8 +120,7 @@ def sync_video_csv_with_template(df, template_behaviors, csv_path, parent=None):
 
     # Save the synced CSV
     csv_path = df.attrs.get('filename', 'synced.csv') if hasattr(df, 'attrs') else 'synced.csv'
-    # Actually, we need to save it back to the original path
-    # But since we don't have the path here, we'll return the dataframe and let the caller save it
+    # Actually, the original path is not needed, just returning the df and let the caller save it manually
 
     return synced_df
 
@@ -152,7 +150,7 @@ def save_annotations_to_csv(video_path, annotations, behaviors, status_bar=None)
     df = pd.DataFrame(data)
     df.to_csv(csv_path, index=False)
     if status_bar:
-        status_bar.showMessage(f"Annotations saved to {csv_path}", 2000) # Show message for 2 seconds
+        status_bar.showMessage(f"Annotations saved to {csv_path}", 2000)
     else:
         print(f"Annotations saved to {csv_path}")
 
@@ -168,37 +166,7 @@ def get_total_frames_from_video(video_path):
     return 0
 
 
-def load_behaviors_from_csv(behaviors_file="behaviors.csv", parent=None):
-    """Load behaviors from behaviors.csv if available"""
-    if os.path.exists(behaviors_file):
-        try:
-            with open(behaviors_file, 'r') as f:
-                line = f.readline().strip()
-                behaviors = [b.strip() for b in line.split(',') if b.strip()]
-        except Exception as e:
-            QMessageBox.warning(parent, "Error", f"Could not load behaviors.csv: {str(e)}")
-            behaviors = get_default_behaviors()
-    else:
-        # Show popup to create behaviors.csv
-        reply = QMessageBox.question(parent, "Create Behavior Template",
-                                   "No behavior.csv file found. Would you like to create one with default behaviors?",
-                                   QMessageBox.Yes | QMessageBox.No)
-        if reply == QMessageBox.Yes:
-            behaviors = get_default_behaviors()
-            save_behaviors_to_csv(behaviors)
-        else:
-            behaviors = []
 
-    return behaviors
-
-
-def save_behaviors_to_csv(behaviors, behaviors_file="behaviors.csv"):
-    """Save behaviors list to behaviors.csv"""
-    try:
-        with open(behaviors_file, 'w') as f:
-            f.write(','.join(behaviors))
-    except Exception as e:
-        QMessageBox.warning(None, "Error", f"Could not save behaviors.csv: {str(e)}")
 
 
 def get_default_behaviors():
@@ -227,7 +195,7 @@ def update_annotations_on_frame_change(annotations, current_frame, video_player,
         if current_frame in annotations:
             del annotations[current_frame]
 
-    # Determine what to display: preview takes precedence over actual annotation
+    # Preview takes precedence over actual annotation
     if preview_behavior:
         # Show preview behavior
         active_behaviors_list = [preview_behavior]
@@ -278,6 +246,7 @@ def remove_labels_from_frame(annotations, current_frame, video_player):
 
 def check_label_removal_on_backward_navigation(annotations, target_frame, video_player, available_behaviors):
     """Check if labels should be removed from subsequent frames when moving backwards"""
+    removed_labels = []
     for behavior in available_behaviors:
         held = video_player.label_key_held.get(behavior, False)
         active = video_player.active_labels.get(behavior, False)
@@ -286,6 +255,8 @@ def check_label_removal_on_backward_navigation(annotations, target_frame, video_
             for frame in list(annotations.keys()):
                 if frame > target_frame and behavior == annotations[frame]:
                     del annotations[frame]
+                    removed_labels.append((frame, behavior))
+    return removed_labels
 
 
 def handle_behavior_removal(annotations, behavior, available_behaviors):
@@ -340,7 +311,6 @@ def handle_range_label_state_change(annotations, behavior, start_frame, end_fram
     active_behaviors_list = [current_behavior] if current_behavior else []
     video_player.current_behavior = active_behaviors_list
 
-    # Update UI
     video_player.update_frame_display()
 
     return active_behaviors_list

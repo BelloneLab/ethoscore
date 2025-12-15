@@ -1,18 +1,18 @@
-# Gamavior : Video Behavior Annotator
+# Ethoscore : Video Behavior Annotator
 
-Gamavior is a video annotation tool for behavioral analysis, built with PySide6 and OpenCV. Annotate video footage with specific behaviors using keyboard, mouse, and gamepad controls.
+Ethoscore is a video annotation tool for behavioral analysis, built with PySide6 and OpenCV. Annotate video footage with specific behaviors using keyboard, mouse, and gamepad controls.
 
-![Screenshot](Screenshot.jpg)
+![Screenshot](assets/Screenshot.jpg)
 
 ## Features
 
-- **Video Playback**: Frame-by-frame navigation with timeline view
+- **Multi-Input Support**: Keyboard shortcuts, mouse, and gamepad controls to keep muscle cramps away
+- **Timeline Interface**: Interactive timeline with zoom/click/drag navigation
 - **Behavior Annotation**: Label frames with customizable behaviors
-- **Multi-Input Support**: Keyboard shortcuts, mouse, and gamepad controls
+- **Optional Gamification**: Get points according to the duration of the labels and even combos if executed quickly!
 - **Auto-Save**: Configurable automatic saving
-- **Timeline Interface**: Interactive timeline with zoom and click navigation
 - **Color-Coded Labels**: Visual behavior identification in the timeline and preview bars for previous/next frame
-- **CSV Export**: Structured annotation data
+- **CSV Export**: Classic frame by frame matrix
 
 ## Installation
 
@@ -25,7 +25,7 @@ pip install -r requirements.txt
 
 **Run**:
 ```bash
-python gamavior.py
+python ethoscore.py
 ```
 
 ## Usage
@@ -46,8 +46,8 @@ python gamavior.py
 - **Ctrl+N**: Load next video
 
 ### Gamepad
-- **Analog Stick**: Frame navigation
-- **Buttons**: Mappable to behaviors, deleting them, or increasing navigation speed
+- **Left Analog Stick**: Frame navigation
+- **Buttons**: Mappable to behaviors, erasing them, or increasing navigation speed
 
 ### Settings
 - **Input Settings**: Keyboard shortcuts and controller mappings
@@ -55,8 +55,7 @@ python gamavior.py
 
 ## Data Format
 
-Annotations saved as CSV with video filename:
-
+Annotations saved as CSV with video filename. Here is a simple example:
 ```
 Frames,nose-to-nose,nose-to-body,anogenital,passive,rearing,fighting,mounting
 1,0,0,0,0,0,0,0
@@ -69,7 +68,5 @@ Frames,nose-to-nose,nose-to-body,anogenital,passive,rearing,fighting,mounting
 
 ## Roadmap
 
-- COCO JSON export
-- Gamification with points and scoring
-- Performance metrics
+- Multi behavior on the same frame support
 - Enhanced caching for large videos

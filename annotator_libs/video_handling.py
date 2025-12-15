@@ -126,7 +126,7 @@ class VideoPlayer(QLabel):
     """Widget to display video frames and handle navigation"""
 
     frame_changed = Signal(int)
-    label_toggled = Signal(str, bool)  # behavior, is_active
+    label_toggled = Signal(str, bool, int, int)  # behavior, is_active, start_frame, end_frame
     current_behavior_changed = Signal(str)
     remove_labels = Signal()
     check_label_removal = Signal(int)  # target_frame
@@ -173,8 +173,8 @@ class VideoPlayer(QLabel):
 
         # Gamepad state
         self.joystick = None
-        self.right_stick_x_axis = -1 # To be determined by debug
-        self.right_stick_y_axis = -1 # To be determined by debug
+        self.right_stick_x_axis = -1
+        self.right_stick_y_axis = -1
         self.gamepad_frame_speed = 5.0 # Frames to jump per stick movement unit (now can be fractional)
         self.gamepad_threshold = 0.1 # Minimum stick movement to register
         self.gamepad_frame_accumulator = 0.5 # Accumulator for sub-frame movements
@@ -581,6 +581,12 @@ class VideoPlayer(QLabel):
         
         return prev_color, next_color
 
+    def is_any_behavior_actively_labeled(self):
+        """Check if any behavior is currently active or being range-labeled."""
+        is_active_toggle = any(self.active_labels.values())
+        is_active_range_labeling = any(self.range_labeling_active.values())
+        return is_active_toggle or is_active_range_labeling
+
     def get_behavior_color(self, behavior):
         """Get color for behavior (placeholder - will be connected to BehaviorButtons)"""
         colors = {
@@ -603,8 +609,9 @@ class VideoPlayer(QLabel):
 
         self.current_frame = frame_number
 
-        # Update progress bar
-        self.progress_bar.setValue(self.current_frame)
+        # Update progress bar only if no behavior is actively labeled
+        if not self.is_any_behavior_actively_labeled():
+            self.progress_bar.setValue(self.current_frame)
 
         # Update current_behavior for the new frame BEFORE updating display
         active_behaviors_list = update_annotations_on_frame_change(
@@ -644,7 +651,8 @@ class VideoPlayer(QLabel):
         else:
             self.active_labels[behavior] = True
 
-        self.label_toggled.emit(behavior, self.active_labels[behavior])
+        # For simple toggle, start_frame and end_frame are the current_frame
+        self.label_toggled.emit(behavior, self.active_labels[behavior], self.current_frame, self.current_frame)
         self.update_frame_display()
 
     def set_labeling_mode(self, behavior, active):
@@ -662,7 +670,7 @@ class VideoPlayer(QLabel):
 
     def on_navigation_timer(self):
         """Handle continuous navigation when arrow keys are held"""
-        # Check if we need frame-by-frame navigation due to held behavior
+        # Check if frame-by-frame navigation is needed (hold label)
         needs_frame_by_frame = hasattr(self, 'held_behavior') and self.held_behavior is not None
 
         if self.navigation_direction == 1:  # Right arrow
@@ -733,7 +741,7 @@ class VideoPlayer(QLabel):
             self.remove_labels.emit() # Emit signal to remove labels
 
         elif event.key() == Qt.Key_Space:
-            # Toggle play/pause if we implement that later
+            # Toggle play/pause if done one day
             pass
         elif event.key() in range(Qt.Key_1, Qt.Key_9 + 1):
             # Ignore auto-repeat for number keys to prevent flickering, except in hold and toggle modes
@@ -886,6 +894,8 @@ class VideoPlayer(QLabel):
             if not self.range_labeling_active.get(behavior, False):
                 self.range_labeling_active[behavior] = True
                 self.range_labeling_start[behavior] = self.current_frame
+                # Emit signal for the start of the label (long press)
+                self.label_toggled.emit(behavior, True, self.current_frame, self.current_frame) # Emit once for start with current_frame as start/end
             # Update timeline with range preview
             if self.timeline:
                 self.timeline.set_range_preview(behavior, self.current_frame, self.current_frame)
@@ -894,7 +904,8 @@ class VideoPlayer(QLabel):
         """Clear held behavior and active labels for hold mode after delay"""
         self.held_behavior = None
         self.active_labels[behavior] = False
-        self.label_toggled.emit(behavior, False)
+        # The label_toggled.emit(behavior, False, start_frame, end_frame) is already handled in _handle_label_input
+        # when the key is released, so no need to emit again here.
         self.update_frame_display()
         # Clean up timer
         if behavior in self.clear_timers:
@@ -1020,6 +1031,9 @@ class VideoPlayer(QLabel):
                     from annotator_libs.annotation_logic import apply_range_label
                     apply_range_label(self.annotations, behavior, start_frame, end_frame, self.available_behaviors, self.include_last_frame_in_range)
 
+                    # Emit signal for the end of the label
+                    self.label_toggled.emit(behavior, False, start_frame, end_frame) # Emit once for end with actual range
+
                     # Clean up
                     del self.range_labeling_active[behavior]
                     del self.range_labeling_start[behavior]
@@ -1033,6 +1047,8 @@ class VideoPlayer(QLabel):
                 if not self.range_labeling_active.get(behavior, False):
                     self.range_labeling_active[behavior] = True
                     self.range_labeling_start[behavior] = self.current_frame
+                    # Emit signal for the start of the label
+                    self.label_toggled.emit(behavior, True, self.current_frame, self.current_frame) # Emit once for start with current_frame as start/end
                 # Update timeline with range preview
                 if self.timeline:
                     self.timeline.set_range_preview(behavior, self.current_frame, self.current_frame)
@@ -1063,6 +1079,9 @@ class VideoPlayer(QLabel):
                     # Apply the range label to actual annotations (CSV)
                     apply_range_label(self.annotations, behavior, start_frame, end_frame, self.available_behaviors, self.include_last_frame_in_range)
 
+                    # Emit signal for the end of the label
+                    self.label_toggled.emit(behavior, False, start_frame, end_frame) # Emit once for end with actual range
+
                     # Clean up
                     del self.range_labeling_active[behavior]
                     del self.range_labeling_start[behavior]
@@ -1090,6 +1109,8 @@ class VideoPlayer(QLabel):
                         # Update timeline with range preview
                         if self.timeline:
                             self.timeline.set_range_preview(behavior, self.current_frame, self.current_frame)
+                        # Emit signal for the start of the label
+                        self.label_toggled.emit(behavior, True, self.current_frame, self.current_frame) # Emit once for start with current_frame as start/end
                     else:
                         # Second short press: end range labeling
                         start_frame = self.range_labeling_start[behavior]
@@ -1097,6 +1118,9 @@ class VideoPlayer(QLabel):
 
                         # Apply the range label to actual annotations (CSV)
                         apply_range_label(self.annotations, behavior, start_frame, end_frame, self.available_behaviors, self.include_last_frame_in_range)
+
+                        # Emit signal for the end of the label
+                        self.label_toggled.emit(behavior, False, start_frame, end_frame) # Emit once for end with actual range
 
                         # Clean up
                         del self.range_labeling_active[behavior]
@@ -1113,6 +1137,9 @@ class VideoPlayer(QLabel):
 
                         # Apply the range label to actual annotations (CSV)
                         apply_range_label(self.annotations, behavior, start_frame, end_frame, self.available_behaviors, self.include_last_frame_in_range)
+
+                        # Emit signal for the end of the label
+                        self.label_toggled.emit(behavior, False, start_frame, end_frame) # Emit once for end with actual range
 
                         # Clean up
                         del self.range_labeling_active[behavior]
@@ -1159,10 +1186,7 @@ class VideoPlayer(QLabel):
     def _end_timeline_drag(self, end_frame=None):
         """Handle the end of timeline dragging for range labeling"""
         from annotator_libs.annotation_logic import apply_range_label
-
-        # The user expects the end frame to be the current frame of the video player,
-        # not necessarily where the mouse was released on the timeline.
-        # So, we will always use self.current_frame as the end_frame for applying the label.
+        # Use self.current_frame as the end_frame for applying the label.
         actual_end_frame = self.current_frame
 
         # Apply range labels for any active range labeling
