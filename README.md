@@ -7,6 +7,8 @@ Ethoscore is a video annotation tool for behavioral analysis, built with PySide6
 ## Features
 
 - **Multi-Input Support**: Keyboard shortcuts, mouse, and gamepad controls to keep muscle cramps away
+- **Multitrack Annotation**: Label multiple behaviors on the same frame simultaneously
+- **Undo Support**: Easily revert recent annotation changes with Ctrl+Z
 - **Timeline Interface**: Interactive timeline with zoom/click/drag navigation
 - **Behavior Annotation**: Label frames with customizable behaviors
 - **Optional Gamification**: Get points according to the duration of the labels and even combos if executed quickly!
@@ -41,17 +43,18 @@ python ethoscore.py
 - **Shift + Arrows**: Jump larger increments (configurable)
 - **Number Keys**: Toggle behaviors
 - **Escape**: Remove labels
+- **Ctrl+Z**: Undo last action
 - **Ctrl+S**: Save
 - **Ctrl+O**: Load video
 - **Ctrl+N**: Load next video
 
 ### Gamepad
 - **Left Analog Stick**: Frame navigation
-- **Buttons**: Mappable to behaviors, erasing them, or increasing navigation speed
+- **Buttons**: Fully mappable to behaviors, erasing, undoing, or fast-forwarding using the in-app mapping utility
 
 ### Settings
-- **Input Settings**: Keyboard shortcuts and controller mappings
-- **General Settings**: Auto-save, UI preferences
+- **Input Settings**: Keyboard shortcuts and advanced controller mappings (deadzones, sensitivity)
+- **General Settings**: Auto-save, UI preferences, Multitrack toggle
 
 ## Data Format
 
@@ -68,5 +71,5 @@ Frames,nose-to-nose,nose-to-body,anogenital,passive,rearing,fighting,mounting
 
 ## Roadmap
 
-- Multi behavior on the same frame support
 - Enhanced caching for large videos
+- Selective erasing in multitrack mode 

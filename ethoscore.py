@@ -4,6 +4,11 @@ import time
 import pandas as pd
 import json
 import warnings
+
+# Suppress warnings before importing modules that might trigger them
+warnings.filterwarnings("ignore", category=UserWarning, module="pkg_resources")
+warnings.filterwarnings("ignore")
+
 from PySide6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout,
                               QWidget, QPushButton, QLabel, QFileDialog, QComboBox,
                               QMessageBox, QInputDialog, QDialog,
@@ -16,7 +21,8 @@ from PySide6.QtSvgWidgets import QSvgWidget
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
 import pygame
 from annotator_libs.video_handling import VideoPlayer
-from annotator_libs.ui_components import BehaviorButtons, TimelineWidget, LoadingScreen
+from annotator_libs.ui_components import (BehaviorButtons, TimelineWidget, LoadingScreen, 
+                                        get_friendly_controller_name)
 from annotator_libs.annotation_logic import (
     load_annotations_from_csv,
     save_annotations_to_csv, update_annotations_on_frame_change,
@@ -28,11 +34,6 @@ from annotator_libs.gamification_logic import GamificationManager, LiveScoreWidg
 
 # Suppress Qt warnings
 os.environ['QT_LOGGING_RULES'] = '*.warning=false'
-# Suppress warnings
-warnings.filterwarnings("ignore", category=UserWarning, module="pkg_resources")
-warnings.filterwarnings("ignore")
-
-import pygame
 
 
 class WelcomeDialog(QDialog):
@@ -61,19 +62,55 @@ class WelcomeDialog(QDialog):
     def setup_ui(self):
         self.setWindowTitle("Ethoscore")
         self.setModal(True)
-        self.setFixedSize(600, 400)
+        self.setFixedSize(600, 450)
+        
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #1a1a1a;
+                color: #e0e0e0;
+            }
+            QLabel {
+                color: #e0e0e0;
+            }
+            QPushButton {
+                background-color: #333333;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 10px;
+                font-weight: bold;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #444444;
+            }
+            QPushButton#primaryBtn {
+                background-color: #3498db;
+            }
+            QPushButton#primaryBtn:hover {
+                background-color: #2980b9;
+            }
+            QPushButton#secondaryBtn {
+                background-color: #2ecc71;
+            }
+            QPushButton#secondaryBtn:hover {
+                background-color: #27ae60;
+            }
+        """)
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(20)
-        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(25)
+        layout.setContentsMargins(30, 30, 30, 30)
 
         # Title
-        title_label = QLabel("Ethoscore")
+        title_label = QLabel("ETHOSCORE")
         title_font = QFont()
-        title_font.setPointSize(18)
+        title_font.setPointSize(24)
         title_font.setBold(True)
+        title_font.setLetterSpacing(QFont.AbsoluteSpacing, 2)
         title_label.setFont(title_font)
         title_label.setAlignment(Qt.AlignCenter)
+        title_label.setStyleSheet("color: #3498db; margin-bottom: 10px;")
         layout.addWidget(title_label)
 
         # Top row: rescan button (left) and logo (right)
@@ -92,7 +129,7 @@ class WelcomeDialog(QDialog):
         # Logo - conditionally show controller or keyboard logo (right)
         logo_file = "assets/controller-logo.svg" if self.controller_count > 0 else "assets/keyboard-logo.svg"
         self.logo_widget = QSvgWidget(logo_file)
-        self.logo_widget.setFixedSize(100, 100)
+        self.logo_widget.setFixedSize(80, 80)
         top_row.addWidget(self.logo_widget, alignment=Qt.AlignRight)
 
         layout.addLayout(top_row)
@@ -100,33 +137,39 @@ class WelcomeDialog(QDialog):
         # Show last video name if available
         if self.last_video_path and os.path.exists(self.last_video_path):
             last_video_name = os.path.basename(self.last_video_path)
-            last_video_label = QLabel(f"Last video: {last_video_name}")
+            last_video_label = QLabel(f"LAST VIDEO: {last_video_name}")
             last_video_label.setAlignment(Qt.AlignCenter)
+            last_video_label.setStyleSheet("color: #888; font-size: 11px; font-weight: bold;")
             layout.addWidget(last_video_label)
 
         # Bottom row: 3 buttons side by side
         button_row = QHBoxLayout()
-        button_row.setSpacing(10)
+        button_row.setSpacing(15)
 
         # Open Last Video button
         self.open_last_btn = QPushButton("Open Last Video")
+        self.open_last_btn.setObjectName("secondaryBtn")
         self.open_last_btn.setMinimumWidth(120)
         self.open_last_btn.clicked.connect(self.open_last_video)
         button_row.addWidget(self.open_last_btn)
 
         # Open Next Video button
         self.open_next_btn = QPushButton("Open Next Video")
+        self.open_next_btn.setObjectName("primaryBtn")
         self.open_next_btn.setMinimumWidth(120)
         self.open_next_btn.clicked.connect(self.open_next_video)
         button_row.addWidget(self.open_next_btn)
 
         # Select In Files button
-        self.select_new_btn = QPushButton("Select In Files")
+        self.select_new_btn = QPushButton("Select File")
         self.select_new_btn.setMinimumWidth(120)
         self.select_new_btn.clicked.connect(self.select_new_video)
         button_row.addWidget(self.select_new_btn)
 
         layout.addLayout(button_row)
+
+        # Update button visibility based on last video availability
+        self.update_button_visibility()
 
         # Update button visibility based on last video availability
         self.update_button_visibility()
@@ -211,11 +254,12 @@ class VideoAnnotator(QMainWindow):
     def __init__(self):
         super().__init__()
         self.video_path = ""
-        self.annotations = {}  # frame_number -> behavior (single)
-        self.current_behavior = None
+        self.annotations = {}  # frame_number -> list of behaviors
+        self.current_behavior = []
         self.view_only_mode = False  # Flag to track if in view-only mode
         # Initialize shortcuts first
         self.shortcuts = {}
+        self.undo_stack = [] # Stack for undoing annotations
         self.settings = QSettings('VideoAnnotator', 'Settings') # Initialize general settings here
         self.input_settings = QSettings('VideoAnnotator', 'InputSettings') # Initialize input settings here
         self.gamification_settings = QSettings('VideoAnnotator', 'GamificationSettings') # Initialize gamification settings
@@ -237,6 +281,7 @@ class VideoAnnotator(QMainWindow):
         self.setup_ui()
         self.load_input_settings_on_startup() # Load input settings at startup
         # Apply loaded settings to video player
+        self.video_player.multitrack_enabled = self.multitrack_enabled
         self.video_player.update_label_key_mode(self.label_key_mode)
         self.video_player.set_show_overlay_bars(self.show_frame_preview_bars)
         self.video_player.update_input_settings(self.get_current_input_settings_for_startup()) # Apply input settings to video player
@@ -245,23 +290,78 @@ class VideoAnnotator(QMainWindow):
         self.setWindowTitle("Ethoscore")
         self.setGeometry(100, 100, 1200, 800)
 
+        # Apply global dark theme
+        self.setStyleSheet("""
+            QMainWindow {
+                background-color: #1a1a1a;
+                color: #e0e0e0;
+            }
+            QWidget#centralWidget {
+                background-color: #1a1a1a;
+            }
+            QMenuBar {
+                background-color: #252525;
+                color: #e0e0e0;
+                border-bottom: 1px solid #333;
+            }
+            QMenuBar::item:selected {
+                background-color: #3d3d3d;
+            }
+            QMenu {
+                background-color: #252525;
+                color: #e0e0e0;
+                border: 1px solid #333;
+            }
+            QMenu::item:selected {
+                background-color: #3d3d3d;
+            }
+            QStatusBar {
+                background-color: #1a1a1a;
+                color: #888;
+                border-top: 1px solid #333;
+            }
+            QSplitter::handle {
+                background-color: #252525;
+            }
+            QSplitter::handle:horizontal {
+                width: 4px;
+            }
+            QSplitter::handle:hover {
+                background-color: #3498db;
+            }
+            QLabel {
+                color: #e0e0e0;
+            }
+            QToolTip {
+                background-color: #252525;
+                color: white;
+                border: 1px solid #333;
+            }
+        """)
+
         # Status bar for messages
-        self.statusBar().showMessage("Loading video and labels...") # Initial message
+        self.statusBar().showMessage("Ready")
 
         # Create menu bar
         self.create_menu_bar()
 
         central_widget = QWidget()
+        central_widget.setObjectName("centralWidget")
         main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
         # Create splitter for resizable panels
-        splitter = QSplitter(Qt.Horizontal)
+        self.splitter = QSplitter(Qt.Horizontal)
+        self.splitter.setHandleWidth(4)
 
         # Left panel - video and timeline
         left_widget = QWidget()
         from PySide6.QtWidgets import QSizePolicy
         left_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         left_panel = QVBoxLayout(left_widget)
+        left_panel.setContentsMargins(10, 10, 5, 10)
+        left_panel.setSpacing(10)
 
 
 
@@ -315,52 +415,124 @@ class VideoAnnotator(QMainWindow):
 
         # Right panel - behavior buttons
         right_widget = QWidget()
+        right_widget.setObjectName("rightPanel")
+        right_widget.setStyleSheet("QWidget#rightPanel { background-color: #202020; border-left: 1px solid #333; }")
         from PySide6.QtWidgets import QSizePolicy
-        right_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        right_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         right_panel = QVBoxLayout(right_widget)
+        right_panel.setContentsMargins(10, 10, 10, 10)
+        right_panel.setSpacing(15)
 
         # Video file selection
-        file_layout = QHBoxLayout()
+        file_group = QGroupBox("VIDEO SOURCE")
+        file_group.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold;
+                font-size: 11px;
+                letter-spacing: 1px;
+                border: 1px solid #3d3d3d;
+                border-radius: 8px;
+                margin-top: 15px;
+                padding-top: 15px;
+                color: #888888;
+                background-color: #252525;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 15px;
+                padding: 0 5px 0 5px;
+            }
+        """)
+        file_group_layout = QVBoxLayout(file_group)
+        
+        file_info_layout = QHBoxLayout()
         self.video_path_label = QLabel("No video selected")
+        self.video_path_label.setStyleSheet("color: #e0e0e0; font-weight: italic; font-size: 16px;")
+        self.video_path_label.setAlignment(Qt.AlignCenter)
+        self.video_path_label.setWordWrap(True)
+        file_info_layout.addWidget(self.video_path_label)
+        file_group_layout.addLayout(file_info_layout)
+
+        file_buttons_layout = QHBoxLayout()
         load_video_btn = QPushButton("Load")
+        load_video_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #3d3d3d;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 6px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #4d4d4d; }
+        """)
         load_video_btn.clicked.connect(self.load_video_dialog)
-        file_layout.addWidget(QLabel("Video:"))
-        file_layout.addWidget(self.video_path_label)
-        file_layout.addWidget(load_video_btn)
         
-        self.load_next_video_btn = QPushButton("Load Next")
+        self.load_next_video_btn = QPushButton("Next")
+        self.load_next_video_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #3d3d3d;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 6px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #4d4d4d; }
+        """)
         self.load_next_video_btn.clicked.connect(self.load_next_video_in_main_ui)
-        file_layout.addWidget(self.load_next_video_btn)
         
-        right_panel.addLayout(file_layout)
+        file_buttons_layout.addWidget(load_video_btn)
+        file_buttons_layout.addWidget(self.load_next_video_btn)
+        file_group_layout.addLayout(file_buttons_layout)
+        
+        right_panel.addWidget(file_group)
 
         self.behavior_buttons = BehaviorButtons()
         self.behavior_buttons.behavior_toggled.connect(self.on_behavior_toggled)
         self.behavior_buttons.behavior_added.connect(self.on_behavior_added)
         self.behavior_buttons.behavior_removed.connect(self.on_behavior_removed)
-        right_panel.addWidget(self.behavior_buttons)
+        right_panel.addWidget(self.behavior_buttons, stretch=1)
 
         # Save button
-        self.save_btn = QPushButton("Save Annotations") # Make save_btn an instance variable
+        self.save_btn = QPushButton("SAVE ANNOTATIONS") 
+        self.save_btn.setFixedHeight(45)
+        self.save_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2ecc71;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                font-weight: bold;
+                letter-spacing: 1px;
+                font-size: 12px;
+            }
+            QPushButton:hover { background-color: #27ae60; }
+            QPushButton:pressed { background-color: #1e8449; }
+        """)
         self.save_btn.clicked.connect(self.save_annotations)
         right_panel.addWidget(self.save_btn)
 
         # Set minimum widths for panels
-        left_widget.setMinimumWidth(400)
-        right_widget.setMinimumWidth(200)
+        left_widget.setMinimumWidth(500)
+        right_widget.setMinimumWidth(250)
 
         # Add widgets to splitter
-        splitter.addWidget(left_widget)
-        splitter.addWidget(right_widget)
+        self.splitter.addWidget(left_widget)
+        self.splitter.addWidget(right_widget)
 
-        # Set stretch factors (left panel gets priority when resizing)
-        splitter.setStretchFactor(0, 1)  # Left panel stretches
-        splitter.setStretchFactor(1, 0)  # Right panel doesn't stretch
+        # Set stretch factors - left panel expands, right panel stays fixed unless dragged
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setStretchFactor(1, 0)
+        
+        # Prevent panels from collapsing to 0
+        self.splitter.setCollapsible(0, False)
+        self.splitter.setCollapsible(1, False)
 
-        # Set initial sizes (3:1 ratio)
-        splitter.setSizes([900, 300])  # Approximate 3:1 ratio for 1200px width
+        # Set initial sizes
+        self.splitter.setSizes([900, 300])
 
-        main_layout.addWidget(splitter)
+        main_layout.addWidget(self.splitter)
 
         self.setCentralWidget(central_widget)
         
@@ -382,6 +554,45 @@ class VideoAnnotator(QMainWindow):
 
         # Connect label toggled signal to gamification manager
         self.video_player.label_toggled.connect(self.on_label_toggled_for_gamification)
+        self.video_player.undo_requested.connect(self.undo)
+        self.video_player.about_to_change_annotations.connect(self.push_undo_state)
+
+    def push_undo_state(self):
+        """Push current annotations to undo stack"""
+        if self.view_only_mode:
+            return
+
+        # Deep copy current state
+        state = {frame: list(behaviors) for frame, behaviors in self.annotations.items()}
+        
+        # Only push if it's different from the last state to avoid redundant entries
+        if self.undo_stack and self.undo_stack[-1] == state:
+            return
+
+        # Limit stack size to 50
+        if len(self.undo_stack) >= 50:
+            self.undo_stack.pop(0)
+        
+        self.undo_stack.append(state)
+
+    def undo(self):
+        """Undo the last annotation change"""
+        if self.view_only_mode:
+            QMessageBox.information(self, "Preview Only Mode", "Cannot undo in view-only mode.")
+            return
+
+        if not self.undo_stack:
+            self.statusBar().showMessage("Nothing to undo", 2000)
+            return
+        
+        # Restore state
+        self.annotations = self.undo_stack.pop()
+        self.video_player.annotations = self.annotations
+        
+        # Update UI
+        self.update_timeline_annotations()
+        self.video_player.update_frame_display()
+        self.statusBar().showMessage("Undo successful", 2000)
 
     def on_label_toggled_for_gamification(self, behavior, is_active, start_frame, end_frame):
         """Handle label toggled events for gamification"""
@@ -429,6 +640,7 @@ class VideoAnnotator(QMainWindow):
         self.show_frame_preview_bars = self.settings.value('show_frame_preview_bars', True, bool) # Default enabled
         self.include_last_frame_in_range = self.settings.value('include_last_frame_in_range', True, bool) # Default include last frame
         self.show_statistics_popup = self.settings.value('show_statistics_popup', True, bool) # Default enabled
+        self.multitrack_enabled = self.settings.value('multitrack_enabled', True, bool) # Default enabled
         self.last_video_path = self.settings.value('last_video_path', '', str)
         # Load frame positions as JSON string and parse to dict
         frame_positions_json = self.settings.value('last_frame_positions', '{}', str)
@@ -459,6 +671,7 @@ class VideoAnnotator(QMainWindow):
         self.settings.setValue('show_frame_preview_bars', self.show_frame_preview_bars)
         self.settings.setValue('include_last_frame_in_range', self.include_last_frame_in_range)
         self.settings.setValue('show_statistics_popup', self.show_statistics_popup)
+        self.settings.setValue('multitrack_enabled', self.multitrack_enabled)
         self.settings.setValue('last_video_path', self.last_video_path)
         # Save frame positions as JSON string
         self.settings.setValue('last_frame_positions', json.dumps(self.last_frame_positions))
@@ -501,6 +714,7 @@ class VideoAnnotator(QMainWindow):
             'next_frame': self.shortcut_settings.value('next_frame', 'Right'),
             'prev_frame': self.shortcut_settings.value('prev_frame', 'Left'),
             'delete': self.shortcut_settings.value('delete', 'Escape'),
+            'undo': self.shortcut_settings.value('undo', 'Ctrl+Z'),
         }
         # Add behavior shortcuts 1-10
         for i in range(1, 11):
@@ -571,6 +785,7 @@ class VideoAnnotator(QMainWindow):
             'next_frame': 'Next Frame',
             'prev_frame': 'Previous Frame',
             'delete': 'Delete Labels',
+            'undo': 'Undo Last Label',
         }
 
         # Add behavior shortcuts up to the number of behaviors
@@ -683,7 +898,7 @@ class VideoAnnotator(QMainWindow):
 
     def show_controller_automap_dialog(self):
         """Show the controller automapping dialog"""
-        dialog = ControllerAutomapDialog(self.behavior_buttons.behaviors + ["fast_forward", "erase"], self.video_player.controller_mappings, self)
+        dialog = ControllerAutomapDialog(self.behavior_buttons.behaviors + ["fast_forward", "erase", "undo"], self.video_player.controller_mappings, self)
         if dialog.exec() == QDialog.Accepted:
             self.video_player.controller_mappings = dialog.get_mappings()
             # Removed immediate save_controller_mappings() call here.
@@ -693,6 +908,8 @@ class VideoAnnotator(QMainWindow):
             # Update the display in input settings if it's open
             if hasattr(self, 'automap_list'):
                 self.update_automap_display()
+            # Update behavior button labels with controller mappings
+            self.behavior_buttons.update_button_mappings(self.video_player.controller_mappings)
 
 
     def show_general_settings_dialog(self):
@@ -749,6 +966,11 @@ class VideoAnnotator(QMainWindow):
         self.show_statistics_popup_checkbox.setChecked(self.show_statistics_popup)
         form_layout.addRow("UI:", self.show_statistics_popup_checkbox)
 
+        # Multitrack checkbox
+        self.multitrack_checkbox = QCheckBox("Enable Multitrack")
+        self.multitrack_checkbox.setChecked(self.multitrack_enabled)
+        form_layout.addRow("Labeling:", self.multitrack_checkbox)
+
         layout.addLayout(form_layout)
 
         # Buttons
@@ -769,12 +991,16 @@ class VideoAnnotator(QMainWindow):
             self.show_frame_preview_bars = self.show_frame_preview_bars_checkbox.isChecked()
             self.include_last_frame_in_range = self.include_last_frame_checkbox.isChecked()
             self.show_statistics_popup = self.show_statistics_popup_checkbox.isChecked()
+            self.multitrack_enabled = self.multitrack_checkbox.isChecked()
             self.save_settings() # Save general settings
 
             # Restart auto-save timer with new settings
             self.auto_save_timer.stop()
             if self.auto_save_enabled:
                 self.auto_save_timer.start(self.auto_save_interval * 60 * 1000)
+
+            # Update VideoPlayer with new multitrack setting
+            self.video_player.multitrack_enabled = self.multitrack_enabled
 
             # Update VideoPlayer with new label key mode setting
             self.video_player.update_label_key_mode(self.label_key_mode)
@@ -803,7 +1029,8 @@ class VideoAnnotator(QMainWindow):
         both_index = self.label_key_mode_combo.findData('both')
         if both_index >= 0:
             self.label_key_mode_combo.setCurrentIndex(both_index)
-        self.show_frame_preview_bars_checkbox.setChecked(True) # Default enabled
+        self.show_statistics_popup_checkbox.setChecked(True) # Default enabled
+        self.multitrack_checkbox.setChecked(True) # Default enabled
 
     def load_input_settings_on_startup(self):
         """Load input settings from QSettings at application startup."""
@@ -904,6 +1131,8 @@ class VideoAnnotator(QMainWindow):
         }
         self.video_player.update_input_settings(input_settings)
         self.save_controller_mappings() # Save automappings as well
+        # Update behavior button labels with controller mappings
+        self.behavior_buttons.update_button_mappings(self.video_player.controller_mappings)
 
     def save_controller_mappings(self):
         """Save controller automappings to QSettings"""
@@ -932,16 +1161,15 @@ class VideoAnnotator(QMainWindow):
 
     def update_automap_display(self):
         """Update the automapping display in the input settings dialog"""
-        if hasattr(self, 'automap_list'):
-            self.automap_list.clear()
-            if self.video_player.controller_mappings:
-                for button_name, behavior in self.video_player.controller_mappings.items():
-                    item = QListWidgetItem(f"{button_name} → {behavior}")
-                    self.automap_list.addItem(item)
-            else:
-                item = QListWidgetItem("No mappings configured")
-                item.setFlags(item.flags() & ~Qt.ItemIsSelectable)  # Make it non-selectable
+        self.automap_list.clear()
+        if self.video_player.controller_mappings:
+            for button_name, behavior in self.video_player.controller_mappings.items():
+                friendly_name = get_friendly_controller_name(button_name)
+                item = QListWidgetItem(f"{friendly_name} → {behavior}")
                 self.automap_list.addItem(item)
+        else:
+            item = QListWidgetItem("No mappings configured")
+            self.automap_list.addItem(item)
 
     def clear_all_automappings(self):
         """Clear all controller automappings"""
@@ -951,6 +1179,8 @@ class VideoAnnotator(QMainWindow):
             self.update_automap_display()
         # Update video player with cleared mappings
         self.video_player.update_input_settings(self.get_current_input_settings())
+        # Update behavior button labels
+        self.behavior_buttons.update_button_mappings(self.video_player.controller_mappings)
 
     def restore_default_input_settings(self):
         """Restore default input settings"""
@@ -974,6 +1204,7 @@ class VideoAnnotator(QMainWindow):
                 'next_frame': 'Right',
                 'prev_frame': 'Left',
                 'delete': 'Escape',
+                'undo': 'Ctrl+Z',
             }
             # Add behavior shortcuts up to the number of behaviors
             num_behaviors = len(self.behavior_buttons.behaviors)
@@ -1013,6 +1244,9 @@ class VideoAnnotator(QMainWindow):
         # Connect video player to behavior buttons
         self.video_player.available_behaviors = behaviors
         self.video_player.get_behavior_color = self.behavior_buttons.get_behavior_color
+        
+        # Update behavior button labels with controller mappings
+        self.behavior_buttons.update_button_mappings(self.video_player.controller_mappings)
 
         # Update input settings with current settings (to refresh button mappings with new behaviors)
         try:
@@ -1103,6 +1337,7 @@ class VideoAnnotator(QMainWindow):
                 # Update video player
                 self.video_player.available_behaviors = csv_behaviors
                 self.video_player.get_behavior_color = self.behavior_buttons.get_behavior_color
+                self.behavior_buttons.update_button_mappings(self.video_player.controller_mappings)
                 return load_annotations_from_csv(video_path, csv_behaviors, parent=self)
 
             elif msg_box.clickedButton() == view_only_btn:
@@ -1117,6 +1352,7 @@ class VideoAnnotator(QMainWindow):
                 # Update video player but disable controls
                 self.video_player.available_behaviors = csv_behaviors
                 self.video_player.get_behavior_color = self.behavior_buttons.get_behavior_color
+                self.behavior_buttons.update_button_mappings(self.video_player.controller_mappings)
                 self.set_controls_enabled(False)  # Disable editing controls
                 QMessageBox.information(self, "Preview Only Mode",
                                       "CSV loaded in view-only mode. Editing is disabled.")
@@ -1175,6 +1411,7 @@ class VideoAnnotator(QMainWindow):
             self.video_path = file_path
             self.video_path_label.setText(os.path.basename(file_path))
             self.annotations = {}  # Reset annotations for new video
+            self.undo_stack = [] # Reset undo stack for new video
 
             # Load score for the new video, or initialize to 0
             initial_score = self.last_video_scores.get(file_path, 0)
@@ -1212,6 +1449,10 @@ class VideoAnnotator(QMainWindow):
 
             # Update timeline with annotations
             self.update_timeline_annotations()
+
+            # Ensure behavior buttons show their controller mappings
+            if hasattr(self, 'behavior_buttons') and hasattr(self.video_player, 'controller_mappings'):
+                self.behavior_buttons.update_button_mappings(self.video_player.controller_mappings)
 
             # Save as last video
             self.last_video_path = file_path
@@ -1349,8 +1590,18 @@ class VideoAnnotator(QMainWindow):
         """Calculate the duration (in frames) of the behavior segment that ends at current_frame"""
         # Find the start of the current behavior segment by going backwards from current_frame
         start_frame = current_frame
-        while start_frame > 0 and self.annotations.get(start_frame - 1) == behavior:
-            start_frame -= 1
+        while start_frame > 0:
+            prev_behaviors = self.annotations.get(start_frame - 1, [])
+            if isinstance(prev_behaviors, list):
+                if behavior in prev_behaviors:
+                    start_frame -= 1
+                else:
+                    break
+            else:
+                if prev_behaviors == behavior:
+                    start_frame -= 1
+                else:
+                    break
 
         # Calculate duration (inclusive of start and end frames)
         duration_frames = current_frame - start_frame + 1
@@ -1372,9 +1623,12 @@ class VideoAnnotator(QMainWindow):
         self.video_player.available_behaviors = self.behavior_buttons.behaviors
         # Update timeline colors
         self.update_timeline_annotations()
+        # Re-apply controller mappings
+        self.behavior_buttons.update_button_mappings(self.video_player.controller_mappings)
 
     def on_behavior_removed(self, behavior):
         """Handle behavior removed"""
+        self.push_undo_state()
         # Save behavior settings
         self.save_behavior_settings()
         # Update video player with new behaviors
@@ -1410,17 +1664,22 @@ class VideoAnnotator(QMainWindow):
             QMessageBox.information(self, "Preview Only Mode", "Cannot modify annotations in view-only mode.")
             return
 
+        self.push_undo_state()
         current_frame = self.video_player.current_frame
         # Get the behavior that was removed before calling remove_labels_from_frame
-        removed_behavior = self.annotations.get(current_frame)
+        removed_behaviors = self.annotations.get(current_frame, [])
         # remove_labels_from_frame now updates video_player.current_behavior internally
         remove_labels_from_frame(
             self.annotations, current_frame, self.video_player
         )
 
-        # Call gamification manager if a label was removed
-        if removed_behavior:
-            self.gamification_manager.label_removed(current_frame, removed_behavior)
+        # Call gamification manager if labels were removed
+        if removed_behaviors:
+            if isinstance(removed_behaviors, list):
+                for behavior in removed_behaviors:
+                    self.gamification_manager.label_removed(current_frame, behavior)
+            else:
+                self.gamification_manager.label_removed(current_frame, removed_behaviors)
 
         # Ensure VideoPlayer's annotations are always in sync with the main annotations
         self.video_player.annotations = self.annotations
@@ -1468,6 +1727,9 @@ class VideoAnnotator(QMainWindow):
                 QMessageBox.information(self, "Preview Only Mode", "Cannot modify annotations in view-only mode.")
                 return
             self.remove_labels_from_current_frame()
+            return
+        elif key_sequence == self.shortcuts['undo']:
+            self.undo()
             return
         # Check behavior shortcuts 1-10
         for i in range(1, 11):
@@ -1580,24 +1842,28 @@ class VideoAnnotator(QMainWindow):
             block_count = 0
             total_frames = 0
             max_duration = 0
-            current_start = None
 
-            for frame in range(self.video_player.total_frames):
-                if self.annotations.get(frame) == behavior:
-                    if current_start is None:
-                        current_start = frame
-                        block_count += 1
-                    total_frames += 1
-                else:
-                    if current_start is not None:
-                        # Calculate duration of this segment
-                        duration = (frame - current_start) / self.video_player.frame_rate
+            # Get only frames that have this behavior, sorted
+            relevant_frames = sorted([f for f, behaviors in self.annotations.items() 
+                                     if (isinstance(behaviors, list) and behavior in behaviors) 
+                                     or behaviors == behavior])
+
+            if relevant_frames:
+                total_frames = len(relevant_frames)
+                block_count = 1
+                current_start = relevant_frames[0]
+                
+                for i in range(1, len(relevant_frames)):
+                    if relevant_frames[i] != relevant_frames[i-1] + 1:
+                        # Gap detected, end previous block
+                        duration = (relevant_frames[i-1] - current_start + 1) / self.video_player.frame_rate
                         max_duration = max(max_duration, duration)
-                        current_start = None
-
-            # Check if behavior continues to end of video
-            if current_start is not None:
-                duration = (self.video_player.total_frames - current_start) / self.video_player.frame_rate
+                        # Start new block
+                        current_start = relevant_frames[i]
+                        block_count += 1
+                
+                # Handle the last block
+                duration = (relevant_frames[-1] - current_start + 1) / self.video_player.frame_rate
                 max_duration = max(max_duration, duration)
 
             behavior_stats[behavior] = {
@@ -1722,7 +1988,8 @@ class ControllerAutomapDialog(QDialog):
         """Returns the human-readable name of the button mapped to a behavior."""
         for button_name, mapped_behavior in self.current_mappings.items():
             if mapped_behavior == behavior:
-                return f"Mapped to: {button_name}"
+                friendly_name = get_friendly_controller_name(button_name)
+                return f"Mapped to: {friendly_name}"
         return "Not mapped"
 
     def init_pygame_joystick(self):
@@ -1833,7 +2100,8 @@ class ControllerAutomapDialog(QDialog):
 
         self.current_mappings[button_name] = behavior
         self.populate_behavior_list() # Refresh the list to show new mapping
-        QMessageBox.information(self, "Mapped", f"'{behavior}' mapped to '{button_name}'.")
+        friendly_name = get_friendly_controller_name(button_name)
+        QMessageBox.information(self, "Mapped", f"'{behavior}' mapped to '{friendly_name}'.")
 
     def clear_mapping(self, behavior):
         """Clears the mapping for a specific behavior."""

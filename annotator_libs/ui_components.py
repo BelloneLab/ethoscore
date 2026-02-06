@@ -5,30 +5,130 @@ from PySide6.QtGui import QPainter, QPen, QColor, QFont, QPaintEvent, QPixmap, Q
 import os
 
 
+def get_friendly_controller_name(button_str):
+    """Returns a human-readable name for a controller button string."""
+    if not button_str:
+        return ""
+    
+    # Standard Xbox-like mapping (common for many controllers in Pygame/SDL)
+    BUTTON_MAP = {
+        0: "Button A",
+        1: "Button B",
+        2: "Button X",
+        3: "Button Y",
+        4: "LB",
+        5: "RB",
+        6: "Back",
+        7: "Start",
+        8: "LSB",
+        9: "RSB",
+        10: "Guide"
+    }
+
+    if button_str.startswith("Button "):
+        try:
+            button_id = int(button_str.split(" ")[1])
+            return BUTTON_MAP.get(button_id, button_str)
+        except (ValueError, IndexError):
+            return button_str
+    
+    if button_str.startswith("Axis "):
+        try:
+            parts = button_str.split(" ")
+            axis_id = int(parts[1])
+            direction = parts[2]
+            
+            # Common trigger assignments
+            if axis_id == 2:
+                if direction == "Positive": return "Left Trigger"
+                if direction == "Negative": return "Right Trigger" # Combined axis case
+                return "Left Trigger"
+            if axis_id == 4: return "Left Trigger"
+            if axis_id == 5: return "Right Trigger"
+            
+            return f"Axis {axis_id} {direction}"
+        except (ValueError, IndexError):
+            return button_str
+            
+    if button_str.startswith("Hat "):
+        try:
+            parts = button_str.split(" ")
+            # hat_id = parts[1]
+            direction = parts[2]
+            return f"D-Pad {direction}"
+        except (ValueError, IndexError):
+            return button_str
+
+    return button_str
+
+
 class BehaviorButtonWidget(QWidget):
-    """Widget containing a behavior button with preview bars"""
+    """Widget containing a behavior button with mapping display and modern styling"""
 
     clicked = Signal()
 
     def __init__(self, text, behavior, parent=None):
         super().__init__(parent)
         self.behavior = behavior
+        self.base_text = text
         self.parent_widget = parent
-        self.show_bars = False
-        self.prev_color = None
-        self.next_color = None
+        self.is_active = False
 
         # Create layout
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(0)
 
-        # Create button
-        self.button = QPushButton(text)
+        # Create button-like container
+        self.button = QPushButton()
         from PySide6.QtWidgets import QSizePolicy
-        self.button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.button.setCheckable(True)
         self.button.clicked.connect(self.clicked.emit)
+        
+        # Internal layout for labels
+        btn_layout = QVBoxLayout(self.button)
+        btn_layout.setContentsMargins(8, 6, 8, 6)
+        btn_layout.setSpacing(2)
+        
+        self.name_label = QLabel(text)
+        self.name_label.setAlignment(Qt.AlignCenter)
+        self.name_label.setWordWrap(True)
+        self.name_label.setStyleSheet("""
+            font-weight: bold; 
+            color: white; 
+            background: transparent; 
+            border: none; 
+            font-size: 13px;
+        """)
+        # Adding a shadow effect for better readability
+        from PySide6.QtWidgets import QGraphicsDropShadowEffect
+        shadow = QGraphicsDropShadowEffect()
+        shadow.setBlurRadius(4)
+        shadow.setColor(QColor(0, 0, 0, 180))
+        shadow.setOffset(1, 1)
+        self.name_label.setGraphicsEffect(shadow)
+        
+        self.mapping_label = QLabel("")
+        self.mapping_label.setAlignment(Qt.AlignCenter)
+        self.mapping_label.setStyleSheet("font-size: 10px; font-weight: bold; color: rgba(255, 255, 255, 0.9); background: rgba(0, 0, 0, 0.2); border-radius: 3px; padding: 1px 4px; border: none;")
+        self.mapping_label.setVisible(False)
+        
+        btn_layout.addWidget(self.name_label)
+        btn_layout.addWidget(self.mapping_label)
+        
         layout.addWidget(self.button)
+        self.setMinimumHeight(65)
+        self.setMaximumHeight(80)
+
+    def set_mapping_text(self, mapping_text):
+        """Update the mapping label"""
+        if mapping_text:
+            friendly_name = get_friendly_controller_name(mapping_text)
+            self.mapping_label.setText(friendly_name.upper())
+            self.mapping_label.setVisible(True)
+        else:
+            self.mapping_label.setVisible(False)
 
     def set_button_style(self, style_sheet):
         """Set the button style"""
@@ -36,7 +136,7 @@ class BehaviorButtonWidget(QWidget):
 
 
 class BehaviorButtons(QWidget):
-    """Widget containing behavior selection buttons"""
+    """Widget containing behavior selection buttons with modern dark theme"""
 
     behavior_toggled = Signal(str)
     behavior_added = Signal(str)
@@ -47,98 +147,126 @@ class BehaviorButtons(QWidget):
         self.behaviors = []
         self.buttons = []
         self.behavior_colors = {
-            "nose-to-nose": "#FF6B6B",  # Red
-            "nose-to-body": "#A7DB50",  # Lime
-            "anogenital": "#45B7D1",    # Blue
-            "passive": "#BD23FF",       # Violet
-            "rearing": "#ECFF1C",       # Yellow
-            "fighting": "#00FFC8",     # Turquoise
-            "mounting": "#FF8C00"      # Orange
+            "nose-to-nose": "#E74C3C",  # Soft Red
+            "nose-to-body": "#2ECC71",  # Soft Green
+            "anogenital": "#3498DB",    # Soft Blue
+            "passive": "#9B59B6",       # Soft Purple
+            "rearing": "#F1C40F",       # Soft Yellow
+            "fighting": "#1ABC9C",      # Soft Turquoise
+            "mounting": "#E67E22"       # Soft Orange
         }
         self.current_frame = 0
         self.annotations = {}
+        self.controller_mappings = {} # Store mappings for persistence during re-layouts
         self.setup_ui()
 
     def setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)
-        layout.setSpacing(5)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(10)
 
         # Labels group box
-        labels_group = QGroupBox("Labels")
+        labels_group = QGroupBox("LABELS")
         labels_group.setStyleSheet("""
             QGroupBox {
                 font-weight: bold;
-                border: 2px solid #cccccc;
-                border-radius: 5px;
-                margin-top: 1ex;
-                padding-top: 10px;
+                font-size: 11px;
+                letter-spacing: 1px;
+                border: 1px solid #3d3d3d;
+                border-radius: 8px;
+                margin-top: 15px;
+                padding-top: 15px;
+                color: #888888;
+                background-color: #252525;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
-                left: 10px;
+                left: 15px;
                 padding: 0 5px 0 5px;
             }
         """)
         labels_layout = QVBoxLayout(labels_group)
-        labels_layout.setContentsMargins(5, 5, 5, 5)
-        labels_layout.setSpacing(5)
+        labels_layout.setContentsMargins(8, 8, 8, 8)
+        labels_layout.setSpacing(8)
 
         # Scroll area for behaviors
         self.scroll_area = QScrollArea()
         self.scroll_area.setStyleSheet("""
             QScrollArea {
-                border: 1px solid #cccccc;
-                border-radius: 3px;
-                background-color: #fafafa;
+                border: none;
+                background-color: transparent;
+            }
+            QScrollBar:vertical {
+                border: none;
+                background: #252525;
+                width: 10px;
+                margin: 0px;
+            }
+            QScrollBar::handle:vertical {
+                background: #3d3d3d;
+                min-height: 20px;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #4d4d4d;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
             }
         """)
         scroll_widget = QWidget()
-        self.grid_layout = QGridLayout(scroll_widget)
-        self.grid_layout.setContentsMargins(5, 5, 5, 5)
-        self.grid_layout.setSpacing(5)
+        scroll_widget.setStyleSheet("background-color: transparent;")
+        self.button_layout = QVBoxLayout(scroll_widget)
+        self.button_layout.setContentsMargins(0, 0, 0, 0)
+        self.button_layout.setSpacing(8)
+        self.button_layout.addStretch() # Add stretch at the end
         self.scroll_area.setWidget(scroll_widget)
         self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setMinimumHeight(150)
+        self.scroll_area.setMinimumHeight(200)
         labels_layout.addWidget(self.scroll_area)
 
         layout.addWidget(labels_group)
 
         # Add/Remove buttons in a separate group
-        management_group = QGroupBox("Manage Labels")
+        management_group = QGroupBox("MANAGEMENT")
         management_group.setStyleSheet("""
             QGroupBox {
                 font-weight: bold;
-                border: 2px solid #cccccc;
-                border-radius: 5px;
-                margin-top: 1ex;
-                padding-top: 10px;
+                font-size: 11px;
+                letter-spacing: 1px;
+                border: 1px solid #3d3d3d;
+                border-radius: 8px;
+                margin-top: 15px;
+                padding-top: 15px;
+                color: #888888;
+                background-color: #252525;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
-                left: 10px;
+                left: 15px;
                 padding: 0 5px 0 5px;
             }
         """)
         management_layout = QHBoxLayout(management_group)
-        management_layout.setContentsMargins(5, 5, 5, 5)
-        management_layout.setSpacing(10)
+        management_layout.setContentsMargins(10, 10, 10, 10)
+        management_layout.setSpacing(8)
 
         self.add_btn = QPushButton("Add Label")
         self.add_btn.setStyleSheet("""
             QPushButton {
-                padding: 8px 16px;
+                padding: 8px;
                 font-weight: bold;
-                background-color: #4CAF50;
+                background-color: #2ecc71;
                 color: white;
                 border: none;
-                border-radius: 4px;
+                border-radius: 6px;
+                font-size: 11px;
             }
             QPushButton:hover {
-                background-color: #45a049;
+                background-color: #27ae60;
             }
             QPushButton:pressed {
-                background-color: #3e8e41;
+                background-color: #1e8449;
             }
         """)
         self.add_btn.clicked.connect(self.add_behavior)
@@ -146,18 +274,19 @@ class BehaviorButtons(QWidget):
         self.remove_btn = QPushButton("Remove Label")
         self.remove_btn.setStyleSheet("""
             QPushButton {
-                padding: 8px 16px;
+                padding: 8px;
                 font-weight: bold;
-                background-color: #f44336;
+                background-color: #e74c3c;
                 color: white;
                 border: none;
-                border-radius: 4px;
+                border-radius: 6px;
+                font-size: 11px;
             }
             QPushButton:hover {
-                background-color: #da190b;
+                background-color: #c0392b;
             }
             QPushButton:pressed {
-                background-color: #b71c1c;
+                background-color: #922b21;
             }
         """)
         self.remove_btn.clicked.connect(self.remove_behavior)
@@ -173,69 +302,67 @@ class BehaviorButtons(QWidget):
         self.layout_buttons()
 
     def layout_buttons(self):
-        """Layout the behavior buttons based on available width"""
+        """Layout the behavior buttons in a single column"""
         self.buttons = []
 
-        # Clear existing widgets safely
-        while self.grid_layout.count():
-            item = self.grid_layout.takeAt(0)
+        # Clear existing widgets safely (excluding the stretch)
+        while self.button_layout.count() > 1:
+            item = self.button_layout.takeAt(0)
             if item and item.widget():
                 item.widget().setParent(None)
 
         if not self.behaviors:
             return
 
-        # Calculate number of columns based on available width
-        available_width = self.scroll_area.viewport().width() - 20
-        if available_width <= 0:
-            available_width = 300
-
-        # Estimate button width
-        estimated_btn_width = 120
-        num_columns = max(1, available_width // estimated_btn_width)
-
-        # Add buttons to grid
+        # Add buttons to layout
         for i, behavior in enumerate(self.behaviors):
-            row = i // num_columns
-            col = i % num_columns
             btn_widget = BehaviorButtonWidget(f"{i+1}. {behavior}", behavior, self)
 
             # Set button color based on behavior
-            color = self.behavior_colors.get(behavior, "#CCCCCC")
+            color = self.behavior_colors.get(behavior, "#555555")
+            dark_color = self.darken_color(color)
+            light_color = self.lighten_color(color)
+            
             button_style = f"""
                 QPushButton {{
                     background-color: {color};
-                    border: 2px solid {self.darken_color(color)};
-                    padding: 8px;
-                    font-weight: bold;
+                    border: 1px solid {dark_color};
+                    border-radius: 6px;
+                    padding: 0px;
                 }}
                 QPushButton:checked {{
-                    background-color: {self.darken_color(color)};
-                    border: 3px solid #000000;
+                    background-color: {dark_color};
+                    border: 2px solid white;
                 }}
                 QPushButton:hover {{
-                    background-color: {self.lighten_color(color)};
+                    background-color: {light_color};
                 }}
             """
             btn_widget.set_button_style(button_style)
 
             btn_widget.clicked.connect(lambda b=behavior: self.toggle_behavior(b))
-            self.grid_layout.addWidget(btn_widget, row, col)
+            self.button_layout.insertWidget(self.button_layout.count() - 1, btn_widget)
             self.buttons.append(btn_widget)
 
-        # Set column stretches for equal sizing
-        for col in range(num_columns):
-            self.grid_layout.setColumnStretch(col, 1)
+        # Apply stored mappings to the newly created buttons
+        if self.controller_mappings:
+            self.apply_button_mappings()
 
-    def resizeEvent(self, event):
-        """Handle resize to re-layout buttons with delay"""
-        super().resizeEvent(event)
-        if hasattr(self, '_resize_timer') and self._resize_timer.isActive():
-            self._resize_timer.stop()
-        self._resize_timer = QTimer(self)
-        self._resize_timer.setSingleShot(True)
-        self._resize_timer.timeout.connect(self.layout_buttons)
-        self._resize_timer.start(100)  # 100ms delay
+    def update_button_mappings(self, mappings):
+        """Update all behavior buttons with their controller mappings"""
+        self.controller_mappings = mappings
+        self.apply_button_mappings()
+
+    def apply_button_mappings(self):
+        """Apply stored controller mappings to the current buttons"""
+        # Create reverse mapping: behavior -> button_name
+        reverse_mappings = {}
+        for btn_name, behavior in self.controller_mappings.items():
+            reverse_mappings[behavior] = btn_name
+            
+        for btn_widget in self.buttons:
+            mapping_text = reverse_mappings.get(btn_widget.behavior)
+            btn_widget.set_mapping_text(mapping_text)
 
     def darken_color(self, color):
         """Darken a hex color"""
@@ -320,8 +447,7 @@ class TimelineWidget(QWidget):
     def __init__(self):
         super().__init__()
         self.setMinimumHeight(60)
-        self.setMaximumHeight(80)
-        self.setStyleSheet("background-color: #f0f0f0; border: 1px solid #ccc;")
+        self.setStyleSheet("background-color: #1a1a1a; border-top: 1px solid #333;")
         self.setMouseTracking(True)
 
         # Timeline state
@@ -331,6 +457,7 @@ class TimelineWidget(QWidget):
         self.scroll_offset = 0  # horizontal scroll position in frames
         self.annotations = {}  # frame -> behavior
         self.behavior_colors = {}  # behavior -> color
+        self.max_tracks = 1
 
         # Set minimum zoom to show all frames, maximum zoom to show 1 frame per pixel
         self.min_zoom = 0.01
@@ -345,28 +472,42 @@ class TimelineWidget(QWidget):
         self.pending_frame = None
 
         # Range labeling preview state
-        self.preview_behavior = None
-        self.preview_start_frame = -1
-        self.preview_end_frame = -1 # Current_frame during drag
+        self.preview_behaviors = {} # behavior -> (start_frame, end_frame)
+
+    def _update_height(self):
+        """Update timeline height based on number of tracks"""
+        all_present_behaviors = self.get_sorted_behaviors()
+        num_tracks = max(1, len(all_present_behaviors))
+        
+        # Dynamically adjust height: base 60px + 20px per additional track
+        # Max height capped at 200px to avoid taking over the UI
+        new_height = 60 + (num_tracks - 1) * 20
+        new_height = min(200, new_height)
+        
+        if self.height() != new_height:
+            self.setFixedHeight(new_height)
 
     def set_annotations(self, annotations, behavior_colors):
         """Set annotations and behavior colors for display"""
         self.annotations = annotations
         self.behavior_colors = behavior_colors
+        self._update_height()
         self.update()
 
     def set_range_preview(self, behavior, start_frame, current_frame):
         """Set the range labeling preview for display"""
-        self.preview_behavior = behavior
-        self.preview_start_frame = start_frame
-        self.preview_end_frame = current_frame
+        self.preview_behaviors[behavior] = (start_frame, current_frame)
+        self._update_height()
         self.update()
 
-    def clear_range_preview(self):
-        """Clear the range labeling preview"""
-        self.preview_behavior = None
-        self.preview_start_frame = -1
-        self.preview_end_frame = -1
+    def clear_range_preview(self, behavior=None):
+        """Clear the range labeling preview. If behavior is None, clear all."""
+        if behavior is None:
+            self.preview_behaviors = {}
+        else:
+            if behavior in self.preview_behaviors:
+                del self.preview_behaviors[behavior]
+        self._update_height()
         self.update()
 
     def wheelEvent(self, event):
@@ -496,7 +637,7 @@ class TimelineWidget(QWidget):
         painter.setRenderHint(QPainter.Antialiasing)
 
         # Draw timeline background
-        painter.fillRect(self.rect(), QColor(240, 240, 240))
+        painter.fillRect(self.rect(), QColor(26, 26, 26))
 
         if self.total_frames == 0:
             return
@@ -511,7 +652,7 @@ class TimelineWidget(QWidget):
         self.draw_range_preview(painter, width, height)
 
         # Draw timeline axis
-        painter.setPen(QPen(Qt.black, 1))
+        painter.setPen(QPen(QColor(60, 60, 60), 1))
         painter.drawLine(0, height // 2, width, height // 2)
 
         # Draw frame markers
@@ -521,65 +662,107 @@ class TimelineWidget(QWidget):
         if self.current_frame >= 0:
             x_pos = self.frame_to_x(self.current_frame)
             if 0 <= x_pos <= width:
-                painter.setPen(QPen(Qt.red, 3))
+                painter.setPen(QPen(QColor(231, 76, 60), 2)) # Red color
                 painter.drawLine(int(x_pos), 0, int(x_pos), height)
 
+    def get_sorted_behaviors(self):
+        """Get sorted list of all behaviors in annotations and previews"""
+        all_present_behaviors = set()
+        for behaviors in self.annotations.values():
+            if isinstance(behaviors, list):
+                all_present_behaviors.update(behaviors)
+            elif behaviors:
+                all_present_behaviors.add(behaviors)
+        all_present_behaviors.update(self.preview_behaviors.keys())
+        return sorted(list(all_present_behaviors))
+
     def draw_behavior_segments(self, painter, width, height):
-        """Draw colored segments for behavior annotations"""
-        if not self.annotations:
+        """Draw colored segments for behavior annotations, supporting multiple tracks"""
+        sorted_behaviors = self.get_sorted_behaviors()
+        if not sorted_behaviors:
             return
 
-        # Group consecutive frames with same behavior
-        segments = []
-        current_behavior = None
-        start_frame = 0
-
-        for frame in range(self.total_frames):
-            behavior = self.annotations.get(frame)
-
-            if behavior != current_behavior:
-                if current_behavior is not None:
-                    segments.append((start_frame, frame - 1, current_behavior))
-                current_behavior = behavior
-                start_frame = frame
-
-        # Add final segment
-        if current_behavior is not None:
-            segments.append((start_frame, self.total_frames - 1, current_behavior))
+        # Group consecutive frames for EACH behavior separately
+        behavior_segments = {} # behavior -> list of (start, end)
+        
+        for behavior in sorted_behaviors:
+            segments = []
+            current_start = None
+            
+            for frame in range(self.total_frames):
+                val = self.annotations.get(frame, [])
+                has_behavior = False
+                if isinstance(val, list):
+                    has_behavior = behavior in val
+                else:
+                    has_behavior = behavior == val
+                
+                if has_behavior:
+                    if current_start is None:
+                        current_start = frame
+                else:
+                    if current_start is not None:
+                        segments.append((current_start, frame - 1))
+                        current_start = None
+            
+            if current_start is not None:
+                segments.append((current_start, self.total_frames - 1))
+            
+            behavior_segments[behavior] = segments
 
         # Draw segments
-        for start, end, behavior in segments:
+        num_total_behaviors = len(sorted_behaviors)
+        track_height = (height - 10) / num_total_behaviors
+        
+        for behavior_idx, behavior in enumerate(sorted_behaviors):
+            segments = behavior_segments.get(behavior, [])
+            if not segments:
+                continue
+                
             color = self.behavior_colors.get(behavior, "#CCCCCC")
             q_color = QColor(color)
+            
+            y_pos = 5 + behavior_idx * track_height
 
-            start_x = self.frame_to_x(start)
-            end_x = self.frame_to_x(end + 1)  # +1 to include the end frame
+            for start, end in segments:
+                start_x = self.frame_to_x(start)
+                end_x = self.frame_to_x(end + 1)
 
-            if end_x > 0 and start_x < width:
-                # Clip to visible area
-                visible_start = max(0, start_x)
-                visible_end = min(width, end_x)
+                if end_x > 0 and start_x < width:
+                    visible_start = max(0, start_x)
+                    visible_end = min(width, end_x)
 
-                if visible_start < visible_end:
-                    rect = painter.boundingRect(int(visible_start), 5, int(visible_end - visible_start), height - 10,
-                                              Qt.AlignCenter, behavior[:3])  # Show first 3 chars
+                    if visible_start < visible_end:
+                        painter.fillRect(int(visible_start), int(y_pos), int(visible_end - visible_start), int(track_height),
+                                       QColor(q_color.red(), q_color.green(), q_color.blue(), 150))
 
-                    painter.fillRect(int(visible_start), 5, int(visible_end - visible_start), height - 10,
-                                   QColor(q_color.red(), q_color.green(), q_color.blue(), 150))
-
-                    # Draw behavior label if segment is wide enough
-                    if visible_end - visible_start > 50:
-                        painter.setPen(QPen(Qt.black, 1))
-                        painter.drawText(rect, Qt.AlignCenter, behavior[:3])
+                        # Draw behavior label if segment is wide enough
+                        if visible_end - visible_start > 50 and track_height > 15:
+                            rect = QRect(int(visible_start), int(y_pos), int(visible_end - visible_start), int(track_height))
+                            painter.setPen(QPen(Qt.black, 1))
+                            painter.drawText(rect, Qt.AlignCenter, behavior[:3])
 
     def draw_range_preview(self, painter, width, height):
         """Draw a temporary colored segment for range labeling preview"""
-        if self.preview_behavior and self.preview_start_frame != -1 and self.preview_end_frame != -1:
-            color = self.behavior_colors.get(self.preview_behavior, "#CCCCCC")
+        sorted_behaviors = self.get_sorted_behaviors()
+        if not sorted_behaviors:
+            return
+
+        num_total_behaviors = len(sorted_behaviors)
+        track_height = (height - 10) / num_total_behaviors
+
+        for behavior, (start_frame, end_frame) in self.preview_behaviors.items():
+            if start_frame == -1 or end_frame == -1:
+                continue
+
+            behavior_idx = sorted_behaviors.index(behavior)
+            y_pos = 5 + behavior_idx * track_height
+
+            color = self.behavior_colors.get(behavior, "#CCCCCC")
             q_color = QColor(color)
 
-            start = min(self.preview_start_frame, self.preview_end_frame)
-            end = max(self.preview_start_frame, self.preview_end_frame)
+            start = min(start_frame, end_frame)
+            end = max(start_frame, end_frame)
 
             start_x = self.frame_to_x(start)
             end_x = self.frame_to_x(end + 1) # +1 to include the end frame
@@ -590,12 +773,12 @@ class TimelineWidget(QWidget):
 
                 if visible_start < visible_end:
                     # Draw with a lighter, more transparent color for preview
-                    painter.fillRect(int(visible_start), 5, int(visible_end - visible_start), height - 10,
+                    painter.fillRect(int(visible_start), int(y_pos), int(visible_end - visible_start), int(track_height),
                                    QColor(q_color.red(), q_color.green(), q_color.blue(), 80)) # More transparent
 
                     # Draw a dashed border
                     painter.setPen(QPen(QColor(q_color.red(), q_color.green(), q_color.blue(), 200), 2, Qt.DashLine))
-                    painter.drawRect(int(visible_start), 5, int(visible_end - visible_start), height - 10)
+                    painter.drawRect(int(visible_start), int(y_pos), int(visible_end - visible_start), int(track_height))
 
     def draw_frame_markers(self, painter, width, height):
         """Draw frame number markers"""
@@ -611,7 +794,7 @@ class TimelineWidget(QWidget):
         else:  # Very low zoom, show every 1000 frames
             marker_interval = 1000
 
-        painter.setPen(QPen(Qt.gray, 1))
+        painter.setPen(QPen(QColor(100, 100, 100), 1))
 
         start_frame = max(0, int(self.scroll_offset))
         end_frame = min(self.total_frames, int(self.scroll_offset + width / pixels_per_frame) + 1)

@@ -1,5 +1,8 @@
 import cv2
 import numpy as np
+import warnings
+# Suppress pkg_resources deprecation warning from pygame
+warnings.filterwarnings("ignore", category=UserWarning, module="pkg_resources")
 import pygame
 from pygame.locals import K_ESCAPE
 from PySide6.QtWidgets import QLabel, QProgressBar, QWidget, QHBoxLayout
@@ -130,6 +133,8 @@ class VideoPlayer(QLabel):
     current_behavior_changed = Signal(str)
     remove_labels = Signal()
     check_label_removal = Signal(int)  # target_frame
+    about_to_change_annotations = Signal() # Signal to push undo state
+    undo_requested = Signal() # Signal to request undo
     caching_complete = Signal() # New signal to indicate caching is complete
     preload_progress = Signal(int, int) # current_preloaded, total_to_preload
     preload_finished = Signal() # Signal emitted when all preloading is complete
@@ -219,6 +224,7 @@ class VideoPlayer(QLabel):
         self.is_caching_finished = False # Flag to track caching status
         self.total_frames_to_preload = 0 # Total frames expected to be preloaded in current cycle
         self.current_preloaded_count = 0 # Count of frames preloaded in current cycle
+        self._undo_pushed_for_current_action = False # Flag to avoid redundant undo pushes during continuous actions
 
         # Thread safety for video_capture
         self.video_capture_lock = threading.Lock()
@@ -334,10 +340,17 @@ class VideoPlayer(QLabel):
 
     def load_video(self, video_path):
         """Load a video file"""
-        if self.video_capture:
-            self.video_capture.release()
+        # Stop any existing preloader gracefully before releasing video capture
+        if self.preloader and self.preloader.isRunning():
+            self.preloader.stop()
+            self.preloader.wait()
 
-        self.video_capture = cv2.VideoCapture(video_path)
+        if self.video_capture:
+            with self.video_capture_lock:
+                self.video_capture.release()
+
+        with self.video_capture_lock:
+            self.video_capture = cv2.VideoCapture(video_path)
         if not self.video_capture.isOpened():
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Error", f"Could not open video: {video_path}")
@@ -465,15 +478,15 @@ class VideoPlayer(QLabel):
 
         # Start preloading after displaying current frame, only if not already finished
         if not self.is_caching_finished:
-            # Update timeline with range preview if a behavior is actively being range-labeled
+            # Update timeline with range preview for all active behaviors
             active_range_behaviors = [b for b, active in self.range_labeling_active.items() if active]
-            if active_range_behaviors and self.timeline:
-                behavior = active_range_behaviors[0] # Take the first one
-                start_frame = self.range_labeling_start.get(behavior, self.current_frame)
-                self.timeline.set_range_preview(behavior, start_frame, self.current_frame)
-            else:
-                # Clear any lingering preview if no range labeling is active
-                if self.timeline:
+            if self.timeline:
+                if active_range_behaviors:
+                    for behavior in active_range_behaviors:
+                        start_frame = self.range_labeling_start.get(behavior, self.current_frame)
+                        self.timeline.set_range_preview(behavior, start_frame, self.current_frame)
+                else:
+                    # Clear any lingering preview if no range labeling is active
                     self.timeline.clear_range_preview()
 
             self.preload_timer.start(100)  # Start preloading after 100ms delay
@@ -522,7 +535,6 @@ class VideoPlayer(QLabel):
             )
             self.setPixmap(scaled_pixmap)
             self.update()  # Force repaint
-            QCoreApplication.processEvents()  # Process pending events
 
     def resizeEvent(self, event):
         """Handle widget resize to rescale the video frame"""
@@ -602,10 +614,23 @@ class VideoPlayer(QLabel):
 
     def goto_frame(self, frame_number):
         """Go to specific frame"""
+        old_frame = self.current_frame
+        
         if frame_number < 0:
             frame_number = 0
         elif frame_number >= self.total_frames:
             frame_number = self.total_frames - 1
+
+        # If in removing mode, ensure all intermediate frames are cleared during "leaps" (like timeline dragging)
+        if self.removing_mode and old_frame != frame_number:
+            if not self._undo_pushed_for_current_action:
+                self.about_to_change_annotations.emit()
+                self._undo_pushed_for_current_action = True
+            start_f = min(old_frame, frame_number)
+            end_f = max(old_frame, frame_number)
+            for f in range(start_f, end_f + 1):
+                if f in self.annotations:
+                    del self.annotations[f]
 
         self.current_frame = frame_number
 
@@ -619,15 +644,15 @@ class VideoPlayer(QLabel):
         )
         self.current_behavior = active_behaviors_list
 
-        # Update timeline with range preview if a behavior is actively being range-labeled
+        # Update timeline with range preview for all active behaviors
         active_range_behaviors = [b for b, active in self.range_labeling_active.items() if active]
-        if active_range_behaviors and self.timeline:
-            behavior = active_range_behaviors[0] # Take the first one
-            start_frame = self.range_labeling_start.get(behavior, self.current_frame)
-            self.timeline.set_range_preview(behavior, start_frame, self.current_frame)
-        else:
-            # Clear any lingering preview if no range labeling is active
-            if self.timeline:
+        if self.timeline:
+            if active_range_behaviors:
+                for behavior in active_range_behaviors:
+                    start_frame = self.range_labeling_start.get(behavior, self.current_frame)
+                    self.timeline.set_range_preview(behavior, start_frame, self.current_frame)
+            else:
+                # Clear any lingering preview if no range labeling is active
                 self.timeline.clear_range_preview()
 
         self.update_frame_display()
@@ -641,11 +666,18 @@ class VideoPlayer(QLabel):
         """Go to previous frame(s)"""
         target_frame = self.current_frame - step
         if target_frame >= 0:
+            # Check if any behavior is active or held (which might cause label removal)
+            has_active = any(self.active_labels.values()) or any(self.label_key_held.values())
+            if has_active and not self._undo_pushed_for_current_action:
+                self.about_to_change_annotations.emit()
+                self._undo_pushed_for_current_action = True
+            
             self.check_label_removal.emit(target_frame)
             self.goto_frame(target_frame)
 
     def toggle_label(self, behavior):
         """Toggle a label on/off"""
+        self.about_to_change_annotations.emit()
         if behavior in self.active_labels:
             self.active_labels[behavior] = not self.active_labels[behavior]
         else:
@@ -738,6 +770,7 @@ class VideoPlayer(QLabel):
         elif event.key() == Qt.Key_Escape:
             self.removing_mode = True
             self._qt_escape_held = True
+            self.about_to_change_annotations.emit()
             self.remove_labels.emit() # Emit signal to remove labels
 
         elif event.key() == Qt.Key_Space:
@@ -770,6 +803,7 @@ class VideoPlayer(QLabel):
                 self.navigation_delay_timer.stop()
                 self.navigation_direction = 0
                 self.navigation_speed = 1  # Reset to default
+                self._undo_pushed_for_current_action = False # Reset undo flag
         elif event.key() == Qt.Key_Left:
             self.left_key_held = False # Mark left key as released
             if self.right_key_held: # If right key is still held, switch to right navigation
@@ -781,6 +815,7 @@ class VideoPlayer(QLabel):
                 self.navigation_delay_timer.stop()
                 self.navigation_direction = 0
                 self.navigation_speed = 1  # Reset to default
+                self._undo_pushed_for_current_action = False # Reset undo flag
         elif event.key() in range(Qt.Key_1, Qt.Key_9 + 1):
             if event.isAutoRepeat(): # Ignore auto-repeated key releases
                 return
@@ -788,9 +823,11 @@ class VideoPlayer(QLabel):
             if hasattr(self, 'available_behaviors') and behavior_index < len(self.available_behaviors):
                 behavior = self.available_behaviors[behavior_index]
                 self._handle_label_input(behavior, False, 'keyboard')
+                self._undo_pushed_for_current_action = False # Reset flag on release
         elif event.key() == Qt.Key_Escape:
             self.removing_mode = False
             self._qt_escape_held = False
+            self._undo_pushed_for_current_action = False
 
         super().keyReleaseEvent(event)
 
@@ -808,12 +845,14 @@ class VideoPlayer(QLabel):
             if not self._pygame_escape_held: # Only trigger on initial press
                 self.removing_mode = True
                 self._pygame_escape_held = True
+                self.about_to_change_annotations.emit()
                 self.remove_labels.emit() # Emit signal to remove labels instantly
 
         else:
             if self._pygame_escape_held: # Only trigger on release
                 self.removing_mode = False
                 self._pygame_escape_held = False
+                self._undo_pushed_for_current_action = False
 
         # Process button mappings (both hardcoded and automapped)
         self._process_gamepad_buttons()
@@ -874,6 +913,7 @@ class VideoPlayer(QLabel):
                     self.gamepad_frame_accumulator -= step # Subtract the integer part
             else:
                 # If stick is within threshold, slowly decay the accumulator to prevent drift
+                self._undo_pushed_for_current_action = False
                 if abs(self.gamepad_frame_accumulator) < 0.1: # If very small, reset
                     self.gamepad_frame_accumulator = 0.0
                 else: # Decay
@@ -895,6 +935,9 @@ class VideoPlayer(QLabel):
                 self.range_labeling_active[behavior] = True
                 self.range_labeling_start[behavior] = self.current_frame
                 # Emit signal for the start of the label (long press)
+                if not self._undo_pushed_for_current_action:
+                    self.about_to_change_annotations.emit()
+                    self._undo_pushed_for_current_action = True
                 self.label_toggled.emit(behavior, True, self.current_frame, self.current_frame) # Emit once for start with current_frame as start/end
             # Update timeline with range preview
             if self.timeline:
@@ -938,6 +981,7 @@ class VideoPlayer(QLabel):
                         # Button was just released - complete range labeling
                         self._handle_label_input(behavior, False, 'controller')
                         self.gamepad_button_states[button_name] = False
+                        self._undo_pushed_for_current_action = False
                 except pygame.error:
                     # Joystick not initialized, break to avoid repeated errors
                     break
@@ -990,6 +1034,8 @@ class VideoPlayer(QLabel):
                 elif behavior == "erase":
                     self.removing_mode = True
                     self.remove_labels.emit()
+                elif behavior == "undo":
+                    self.undo_requested.emit()
                 self.gamepad_button_states[button_str] = True
             elif not is_pressed and self.gamepad_button_states.get(button_str, False):
                 # Button was just released
@@ -1000,6 +1046,7 @@ class VideoPlayer(QLabel):
                 elif behavior == "erase":
                     self.removing_mode = False
                 self.gamepad_button_states[button_str] = False
+                self._undo_pushed_for_current_action = False
 
     def _handle_label_input(self, behavior, is_pressed, input_type):
         """
@@ -1019,9 +1066,11 @@ class VideoPlayer(QLabel):
                     # First press: start range labeling
                     self.range_labeling_active[behavior] = True
                     self.range_labeling_start[behavior] = self.current_frame
-                    # Update timeline with range preview
-                    if self.timeline:
-                        self.timeline.set_range_preview(behavior, self.current_frame, self.current_frame)
+                    # Emit signal for the start of the label
+                    if not self._undo_pushed_for_current_action:
+                        self.about_to_change_annotations.emit()
+                        self._undo_pushed_for_current_action = True
+                    self.label_toggled.emit(behavior, True, self.current_frame, self.current_frame) # Emit once for start with current_frame as start/end
                 else:
                     # Second press: end range labeling
                     start_frame = self.range_labeling_start[behavior]
@@ -1029,7 +1078,8 @@ class VideoPlayer(QLabel):
 
                     # Apply the range label to actual annotations (CSV)
                     from annotator_libs.annotation_logic import apply_range_label
-                    apply_range_label(self.annotations, behavior, start_frame, end_frame, self.available_behaviors, self.include_last_frame_in_range)
+                    apply_range_label(self.annotations, behavior, start_frame, end_frame, self.available_behaviors, 
+                                      self.include_last_frame_in_range, self.multitrack_enabled)
 
                     # Emit signal for the end of the label
                     self.label_toggled.emit(behavior, False, start_frame, end_frame) # Emit once for end with actual range
@@ -1040,7 +1090,7 @@ class VideoPlayer(QLabel):
 
                     # Clear timeline range preview
                     if self.timeline:
-                        self.timeline.clear_range_preview()
+                        self.timeline.clear_range_preview(behavior)
 
             elif self.label_key_mode == 'hold':
                 # Hold mode: start range labeling
@@ -1048,6 +1098,9 @@ class VideoPlayer(QLabel):
                     self.range_labeling_active[behavior] = True
                     self.range_labeling_start[behavior] = self.current_frame
                     # Emit signal for the start of the label
+                    if not self._undo_pushed_for_current_action:
+                        self.about_to_change_annotations.emit()
+                        self._undo_pushed_for_current_action = True
                     self.label_toggled.emit(behavior, True, self.current_frame, self.current_frame) # Emit once for start with current_frame as start/end
                 # Update timeline with range preview
                 if self.timeline:
@@ -1077,7 +1130,8 @@ class VideoPlayer(QLabel):
                     end_frame = self.current_frame
 
                     # Apply the range label to actual annotations (CSV)
-                    apply_range_label(self.annotations, behavior, start_frame, end_frame, self.available_behaviors, self.include_last_frame_in_range)
+                    apply_range_label(self.annotations, behavior, start_frame, end_frame, self.available_behaviors, 
+                                      self.include_last_frame_in_range, self.multitrack_enabled)
 
                     # Emit signal for the end of the label
                     self.label_toggled.emit(behavior, False, start_frame, end_frame) # Emit once for end with actual range
@@ -1088,7 +1142,7 @@ class VideoPlayer(QLabel):
 
                     # Clear timeline range preview
                     if self.timeline:
-                        self.timeline.clear_range_preview()
+                        self.timeline.clear_range_preview(behavior)
 
                     # Start timer to clear held behavior after delay
                     if behavior not in self.clear_timers:
@@ -1109,6 +1163,10 @@ class VideoPlayer(QLabel):
                         # Update timeline with range preview
                         if self.timeline:
                             self.timeline.set_range_preview(behavior, self.current_frame, self.current_frame)
+                        
+                        if not self._undo_pushed_for_current_action:
+                            self.about_to_change_annotations.emit()
+                            self._undo_pushed_for_current_action = True
                         # Emit signal for the start of the label
                         self.label_toggled.emit(behavior, True, self.current_frame, self.current_frame) # Emit once for start with current_frame as start/end
                     else:
@@ -1117,7 +1175,8 @@ class VideoPlayer(QLabel):
                         end_frame = self.current_frame
 
                         # Apply the range label to actual annotations (CSV)
-                        apply_range_label(self.annotations, behavior, start_frame, end_frame, self.available_behaviors, self.include_last_frame_in_range)
+                        apply_range_label(self.annotations, behavior, start_frame, end_frame, self.available_behaviors, 
+                                          self.include_last_frame_in_range, self.multitrack_enabled)
 
                         # Emit signal for the end of the label
                         self.label_toggled.emit(behavior, False, start_frame, end_frame) # Emit once for end with actual range
@@ -1128,7 +1187,7 @@ class VideoPlayer(QLabel):
 
                         # Clear timeline range preview
                         if self.timeline:
-                            self.timeline.clear_range_preview()
+                            self.timeline.clear_range_preview(behavior)
                 else:
                     # Timer expired = long press = apply range labeling
                     if self.range_labeling_active.get(behavior, False):
@@ -1136,7 +1195,8 @@ class VideoPlayer(QLabel):
                         end_frame = self.current_frame
 
                         # Apply the range label to actual annotations (CSV)
-                        apply_range_label(self.annotations, behavior, start_frame, end_frame, self.available_behaviors, self.include_last_frame_in_range)
+                        apply_range_label(self.annotations, behavior, start_frame, end_frame, self.available_behaviors, 
+                                          self.include_last_frame_in_range, self.multitrack_enabled)
 
                         # Emit signal for the end of the label
                         self.label_toggled.emit(behavior, False, start_frame, end_frame) # Emit once for end with actual range
@@ -1147,7 +1207,7 @@ class VideoPlayer(QLabel):
 
                         # Clear timeline range preview
                         if self.timeline:
-                            self.timeline.clear_range_preview()
+                            self.timeline.clear_range_preview(behavior)
 
                         # Start timer to clear held behavior after delay
                         if behavior not in self.clear_timers:
@@ -1195,7 +1255,8 @@ class VideoPlayer(QLabel):
                 start_frame = self.range_labeling_start[behavior]
 
                 # Apply the range label to actual annotations (CSV)
-                apply_range_label(self.annotations, behavior, start_frame, actual_end_frame, self.available_behaviors, self.include_last_frame_in_range)
+                apply_range_label(self.annotations, behavior, start_frame, actual_end_frame, self.available_behaviors, 
+                                  self.include_last_frame_in_range, self.multitrack_enabled)
 
                 # Clean up range labeling state
                 del self.range_labeling_active[behavior]
@@ -1203,7 +1264,7 @@ class VideoPlayer(QLabel):
 
                 # Clear timeline range preview
                 if self.timeline:
-                    self.timeline.clear_range_preview()
+                    self.timeline.clear_range_preview(behavior)
 
                 # Only handle one behavior at a time
                 break

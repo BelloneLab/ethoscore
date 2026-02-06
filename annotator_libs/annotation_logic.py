@@ -6,7 +6,7 @@ from PySide6.QtWidgets import QMessageBox, QStatusBar
 def load_annotations_from_csv(video_path, behaviors, parent=None):
     """Load annotations from CSV file if it exists"""
     csv_path = os.path.splitext(video_path)[0] + '.csv'
-    annotations = {}  # frame_number -> behavior (single)
+    annotations = {}  # frame_number -> list of behaviors
 
     if os.path.exists(csv_path):
         try:
@@ -34,10 +34,12 @@ def load_annotations_from_csv(video_path, behaviors, parent=None):
             # Load annotations
             for idx, row in df.iterrows():
                 frame = int(row['Frames']) - 1  # 0-based
+                frame_behaviors = []
                 for b in behaviors_in_csv:
                     if b in behaviors and row[b] == 1: 
-                        annotations[frame] = b
-                        break  # Only take the first one
+                        frame_behaviors.append(b)
+                if frame_behaviors:
+                    annotations[frame] = frame_behaviors
 
         except Exception as e:
             QMessageBox.warning(parent, "Error", f"Could not load annotations: {str(e)}")
@@ -143,9 +145,13 @@ def save_annotations_to_csv(video_path, annotations, behaviors, status_bar=None)
 
     total_frames = get_total_frames_from_video(video_path)
     for frame in range(total_frames):
-        active = annotations.get(frame, None)
+        active_list = annotations.get(frame, [])
         for b in behaviors:
-            data[b].append(1 if b == active else 0)
+            # Handle both old (single string) and new (list) annotation formats
+            if isinstance(active_list, list):
+                data[b].append(1 if b in active_list else 0)
+            else:
+                data[b].append(1 if b == active_list else 0)
 
     df = pd.DataFrame(data)
     df.to_csv(csv_path, index=False)
@@ -178,7 +184,7 @@ def update_annotations_on_frame_change(annotations, current_frame, video_player,
     """Update annotations when frame changes, handling active labels and removing mode"""
 
     # Check for range labeling preview - show behavior on current frame if within active range
-    preview_behavior = None
+    preview_behaviors = []
     for behavior, is_active in video_player.range_labeling_active.items():
         if is_active:
             start_frame = video_player.range_labeling_start.get(behavior)
@@ -187,8 +193,7 @@ def update_annotations_on_frame_change(annotations, current_frame, video_player,
                 min_frame = min(start_frame, current_frame)
                 max_frame = max(start_frame, current_frame)
                 if min_frame <= current_frame <= max_frame:
-                    preview_behavior = behavior
-                    break
+                    preview_behaviors.append(behavior)
 
     # If in removing mode, remove labels from this frame
     if video_player.removing_mode:
@@ -196,13 +201,18 @@ def update_annotations_on_frame_change(annotations, current_frame, video_player,
             del annotations[current_frame]
 
     # Preview takes precedence over actual annotation
-    if preview_behavior:
-        # Show preview behavior
-        active_behaviors_list = [preview_behavior]
+    if preview_behaviors:
+        # Show preview behaviors
+        active_behaviors_list = preview_behaviors
     else:
         # Show actual annotation
-        current_behavior = annotations.get(current_frame, None)
-        active_behaviors_list = [current_behavior] if current_behavior else []
+        current_behavior = annotations.get(current_frame, [])
+        if isinstance(current_behavior, list):
+            active_behaviors_list = current_behavior
+        elif current_behavior:
+            active_behaviors_list = [current_behavior]
+        else:
+            active_behaviors_list = []
 
     video_player.current_behavior = active_behaviors_list
 
@@ -212,20 +222,43 @@ def update_annotations_on_frame_change(annotations, current_frame, video_player,
 def handle_label_state_change(annotations, behavior, is_active, current_frame, video_player):
     """Handle label state change for a behavior"""
     if is_active:
-        # Set this behavior for the frame (replaces any existing)
-        annotations[current_frame] = behavior
+        if video_player.multitrack_enabled:
+            # Get current behaviors for this frame
+            current_behaviors = annotations.get(current_frame, [])
+            
+            # Ensure it's a list
+            if not isinstance(current_behaviors, list):
+                current_behaviors = [current_behaviors] if current_behaviors else []
+            
+            # Add behavior if not already present
+            if behavior not in current_behaviors:
+                current_behaviors.append(behavior)
+            
+            annotations[current_frame] = current_behaviors
+        else:
+            # Multitrack disabled: set to a list with only the new behavior
+            annotations[current_frame] = [behavior]
     else:
-        # Remove the label from this frame if it matches
-        if current_frame in annotations and annotations[current_frame] == behavior:
-            del annotations[current_frame]
+        # Deactivating behavior
+        if current_frame in annotations:
+            current_behaviors = annotations[current_frame]
+            if isinstance(current_behaviors, list):
+                if behavior in current_behaviors:
+                    current_behaviors.remove(behavior)
+                if not current_behaviors:
+                    del annotations[current_frame]
+            elif current_behaviors == behavior:
+                del annotations[current_frame]
 
     # Update display
-    current_behavior = annotations.get(current_frame, None)
-    active_behaviors_list = [current_behavior] if current_behavior else []
-    video_player.current_behavior = active_behaviors_list
+    current_behavior = annotations.get(current_frame, [])
+    if not isinstance(current_behavior, list):
+        current_behavior = [current_behavior] if current_behavior else []
+    
+    video_player.current_behavior = current_behavior
     video_player.update_frame_display()
 
-    return active_behaviors_list
+    return current_behavior
 
 
 def remove_labels_from_frame(annotations, current_frame, video_player):
@@ -239,9 +272,8 @@ def remove_labels_from_frame(annotations, current_frame, video_player):
     video_player.is_stopping_toggle = {}
 
     # Update display
-    current_behavior = annotations.get(current_frame, None)
-    active_behaviors_list = [current_behavior] if current_behavior else []
-    return active_behaviors_list
+    video_player.current_behavior = []
+    return []
 
 
 def check_label_removal_on_backward_navigation(annotations, target_frame, video_player, available_behaviors):
@@ -250,12 +282,28 @@ def check_label_removal_on_backward_navigation(annotations, target_frame, video_
     for behavior in available_behaviors:
         held = video_player.label_key_held.get(behavior, False)
         active = video_player.active_labels.get(behavior, False)
-        if (held or active) and target_frame in annotations and behavior == annotations[target_frame]:
+        
+        # Check if behavior is present in target frame
+        is_in_target = False
+        if target_frame in annotations:
+            if isinstance(annotations[target_frame], list):
+                is_in_target = behavior in annotations[target_frame]
+            else:
+                is_in_target = behavior == annotations[target_frame]
+
+        if (held or active) and is_in_target:
             # Remove from all frames > target_frame
             for frame in list(annotations.keys()):
-                if frame > target_frame and behavior == annotations[frame]:
-                    del annotations[frame]
-                    removed_labels.append((frame, behavior))
+                if frame > target_frame:
+                    if isinstance(annotations[frame], list):
+                        if behavior in annotations[frame]:
+                            annotations[frame].remove(behavior)
+                            removed_labels.append((frame, behavior))
+                            if not annotations[frame]:
+                                del annotations[frame]
+                    elif behavior == annotations[frame]:
+                        del annotations[frame]
+                        removed_labels.append((frame, behavior))
     return removed_labels
 
 
@@ -263,11 +311,16 @@ def handle_behavior_removal(annotations, behavior, available_behaviors):
     """Handle behavior removal - remove from annotations"""
     # Remove from annotations if present
     for frame in list(annotations.keys()):
-        if behavior == annotations[frame]:
+        if isinstance(annotations[frame], list):
+            if behavior in annotations[frame]:
+                annotations[frame].remove(behavior)
+                if not annotations[frame]:
+                    del annotations[frame]
+        elif behavior == annotations[frame]:
             del annotations[frame]
 
 
-def apply_range_label(annotations, behavior, start_frame, end_frame, available_behaviors, include_last_frame=True):
+def apply_range_label(annotations, behavior, start_frame, end_frame, available_behaviors, include_last_frame=True, multitrack_enabled=True):
     """Apply a behavior label to a range of frames"""
     if behavior not in available_behaviors:
         return
@@ -286,7 +339,22 @@ def apply_range_label(annotations, behavior, start_frame, end_frame, available_b
 
     # Apply the label to all frames in the range
     for frame in range(start_frame, range_end):
-        annotations[frame] = behavior
+        if multitrack_enabled:
+            # Get current behaviors for this frame
+            current_behaviors = annotations.get(frame, [])
+            
+            # Ensure it's a list
+            if not isinstance(current_behaviors, list):
+                current_behaviors = [current_behaviors] if current_behaviors else []
+            
+            # Add behavior if not already present
+            if behavior not in current_behaviors:
+                current_behaviors.append(behavior)
+            
+            annotations[frame] = current_behaviors
+        else:
+            # Replace existing behaviors
+            annotations[frame] = [behavior]
 
 
 def remove_range_labels(annotations, start_frame, end_frame):
@@ -304,13 +372,15 @@ def remove_range_labels(annotations, start_frame, end_frame):
 def handle_range_label_state_change(annotations, behavior, start_frame, end_frame, current_frame, video_player):
     """Handle range-based label state change - apply label to range and update UI"""
     # Apply the label to the range
-    apply_range_label(annotations, behavior, start_frame, end_frame, video_player.available_behaviors, video_player.include_last_frame_in_range)
+    apply_range_label(annotations, behavior, start_frame, end_frame, video_player.available_behaviors, 
+                      video_player.include_last_frame_in_range, video_player.multitrack_enabled)
 
     # Update current behavior for display (based on current frame)
-    current_behavior = annotations.get(current_frame, None)
-    active_behaviors_list = [current_behavior] if current_behavior else []
-    video_player.current_behavior = active_behaviors_list
-
+    current_behavior = annotations.get(current_frame, [])
+    if not isinstance(current_behavior, list):
+        current_behavior = [current_behavior] if current_behavior else []
+    
+    video_player.current_behavior = current_behavior
     video_player.update_frame_display()
 
-    return active_behaviors_list
+    return current_behavior

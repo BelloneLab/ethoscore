@@ -74,24 +74,14 @@ class GamificationManager(QObject):
 
     def label_removed(self, frame_number, behavior):
         """Called when a label is removed from a frame."""
-        debug_log(f"label_removed called: frame={frame_number}, behavior='{behavior}'")
         if not self.gamification_enabled:
             return
-        debug_log("  Resetting combo due to label removal")
         self._reset_combo()
 
     def label_completed(self, frame_number, behavior, duration_frames):
         """Called when a behavior segment is completed (last frame set)."""
-        debug_log(f"label_completed called: frame={frame_number}, behavior='{behavior}', duration={duration_frames}")
-        debug_log(f"  gamification_enabled={self.gamification_enabled}")
-        debug_log(f"  combo_timer.isActive()={self.combo_timer.isActive()}")
-        debug_log(f"  last_completed_behavior={self.last_completed_behavior}")
-        debug_log(f"  current_combo_count={self.current_combo_count}")
-        debug_log(f"  combo_threshold={self.combo_threshold}")
-        debug_log(f"  combo_across_behaviors={self.combo_across_behaviors}")
 
         if not self.gamification_enabled:
-            debug_log("  Skipping due to gamification disabled")
             return
 
         # Check if this continues a combo or starts a new one
@@ -104,46 +94,37 @@ class GamificationManager(QObject):
             # Same consecutive label, always continue
             self.current_combo_count += self.combo_increment_value
             combo_continues = True
-            debug_log(f"  Continuing combo (same behavior): new count={self.current_combo_count}")
         elif self.combo_across_behaviors:
             # Different behavior, continue if combo_across_behaviors is enabled
             self.current_combo_count += self.combo_increment_value
             combo_continues = True
-            debug_log(f"  Continuing combo (different behavior, across behaviors enabled): new count={self.current_combo_count}")
         else:
             # Start new combo
             self.current_combo_count = self.combo_increment_value
-            debug_log(f"  Starting new combo: count={self.current_combo_count}")
 
         # Effective combo value (score calculation)
         effective_combo_for_score = self.current_combo_count if self.current_combo_count >= self.combo_threshold else 1
-        debug_log(f"  effective_combo_for_score={effective_combo_for_score}")
 
         # Points gained
         points_gained = self.points_per_label * duration_frames * effective_combo_for_score
-        debug_log(f"  points_per_label={self.points_per_label}, points_gained={points_gained}")
 
         # Text for display
         combo_display_value = self.current_combo_count
         if combo_display_value >= self.combo_threshold:
             combo_text_for_display = f"{duration_frames} x {combo_display_value} Combo!"
-            debug_log(f"  Combo text: {combo_text_for_display}")
         else:
             # If below threshold, only show frames
             combo_text_for_display = f"{duration_frames}"
-            debug_log(f"  Below threshold, text: {combo_text_for_display}")
 
         self.total_score += points_gained
         if self.total_score > self.high_score:
             self.high_score = self.total_score
-        debug_log(f"  Total score: {self.total_score}")
 
         self.score_updated.emit(self.total_score, points_gained, combo_text_for_display)
 
         # Emit combo_activated signal only if combo threshold is met
         if self.current_combo_count >= self.combo_threshold:
             self.combo_activated.emit(self.current_combo_count)
-            debug_log(f"  Combo activated: {self.current_combo_count}")
 
         # Update tracking variables
         self.last_completed_behavior = behavior
@@ -155,9 +136,6 @@ class GamificationManager(QObject):
         self.progress_timer.start(self.progress_update_interval)
         self.remaining_time_ms = self.combo_timeout_ms  # Track remaining time
         self.combo_timer_visible.emit(True)
-        debug_log(f"  Combo timer started with timeout={self.combo_timeout_ms}ms")
-        debug_log(f"  Combo timer active after start: {self.combo_timer.isActive()}")
-        debug_log(f"  Combo timer interval: {self.combo_timer.interval()}ms")
 
     def _update_progress(self):
         """Update the progress bar during combo countdown."""
@@ -174,7 +152,6 @@ class GamificationManager(QObject):
 
     def _reset_combo(self):
         """Resets the global combo counter when timeout occurs."""
-        debug_log("_reset_combo called - combo timeout occurred")
         if not self.gamification_enabled:
             return
         self.current_combo_count = 0
@@ -182,7 +159,6 @@ class GamificationManager(QObject):
         self.combo_timer.stop()
         self.progress_timer.stop()
         self.combo_timer_visible.emit(False)
-        debug_log("  Combo reset complete")
 
     def reset_score(self):
         """Resets the total score and combo."""
