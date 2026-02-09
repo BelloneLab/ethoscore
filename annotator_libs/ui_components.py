@@ -443,6 +443,7 @@ class TimelineWidget(QWidget):
     frame_clicked = Signal(int)
     drag_started = Signal(int)
     drag_ended = Signal(int)
+    segment_clicked = Signal(str, int, int, int, int, Qt.MouseButton)
 
     def __init__(self):
         super().__init__()
@@ -473,6 +474,9 @@ class TimelineWidget(QWidget):
 
         # Range labeling preview state
         self.preview_behaviors = {} # behavior -> (start_frame, end_frame)
+        
+        # Click state
+        self.press_pos = None
 
     def _update_height(self):
         """Update timeline height based on number of tracks"""
@@ -535,15 +539,57 @@ class TimelineWidget(QWidget):
             self.clamp_scroll_offset()
             self.update()
 
+    def get_segment_at(self, x, y):
+        """Identify if a behavior segment exists at the given coordinates"""
+        sorted_behaviors = self.get_sorted_behaviors()
+        if not sorted_behaviors:
+            return None
+
+        num_total_behaviors = len(sorted_behaviors)
+        track_height = (self.height() - 10) / num_total_behaviors
+        
+        # Calculate which track was clicked
+        behavior_idx = int((y - 5) / track_height)
+        if 0 <= behavior_idx < num_total_behaviors:
+            behavior = sorted_behaviors[behavior_idx]
+            clicked_frame = self.x_to_frame(x)
+            
+            # Use the same logic as draw_behavior_segments to find the segment
+            behavior_frames = sorted([f for f, behaviors in self.annotations.items() 
+                                     if (isinstance(behaviors, list) and behavior in behaviors) 
+                                     or (not isinstance(behaviors, list) and behaviors == behavior)])
+            
+            if clicked_frame in behavior_frames:
+                # Find start and end of this contiguous segment
+                start = clicked_frame
+                while start - 1 in behavior_frames:
+                    start -= 1
+                end = clicked_frame
+                while end + 1 in behavior_frames:
+                    end += 1
+                return behavior, start, end
+        return None
+
     def mousePressEvent(self, event):
-        """Handle mouse press to start dragging"""
-        if event.button() == Qt.LeftButton and self.total_frames > 0:
+        """Handle mouse press to start dragging or segment actions"""
+        if self.total_frames == 0:
+            return
+
+        self.press_pos = event.position()
+
+        if event.button() == Qt.LeftButton:
             self.is_dragging = True
             self.last_mouse_x = event.position().x()
             self.drag_start_frame = self.current_frame  # Store frame where dragging started
 
             # Emit signal for drag start
             self.drag_started.emit(self.drag_start_frame)
+        elif event.button() == Qt.RightButton:
+            segment = self.get_segment_at(event.position().x(), event.position().y())
+            if segment:
+                behavior, start, end = segment
+                clicked_frame = self.x_to_frame(event.position().x())
+                self.segment_clicked.emit(behavior, start, end, clicked_frame, self.current_frame, Qt.RightButton)
 
     def mouseMoveEvent(self, event):
         """Handle mouse movement during dragging"""
@@ -568,9 +614,17 @@ class TimelineWidget(QWidget):
                 self.drag_timer.start(16)  # ~60 FPS throttling
 
     def mouseReleaseEvent(self, event):
-        """Handle mouse release to stop dragging"""
+        """Handle mouse release to stop dragging or trigger left-click segment actions"""
         if event.button() == Qt.LeftButton:
             self.is_dragging = False
+
+            # Check if it was a quick click on a segment (minimal movement)
+            if self.press_pos and (event.position() - self.press_pos).manhattanLength() < 10:
+                segment = self.get_segment_at(event.position().x(), event.position().y())
+                if segment:
+                    behavior, start, end = segment
+                    clicked_frame = self.x_to_frame(event.position().x())
+                    self.segment_clicked.emit(behavior, start, end, clicked_frame, self.current_frame, Qt.LeftButton)
 
             # Calculate the final frame where mouse was released
             final_frame = self.x_to_frame(event.position().x())
@@ -687,26 +741,22 @@ class TimelineWidget(QWidget):
         
         for behavior in sorted_behaviors:
             segments = []
-            current_start = None
             
-            for frame in range(self.total_frames):
-                val = self.annotations.get(frame, [])
-                has_behavior = False
-                if isinstance(val, list):
-                    has_behavior = behavior in val
-                else:
-                    has_behavior = behavior == val
-                
-                if has_behavior:
-                    if current_start is None:
-                        current_start = frame
-                else:
-                    if current_start is not None:
-                        segments.append((current_start, frame - 1))
-                        current_start = None
+            # Find frames that have this behavior, sorted
+            behavior_frames = sorted([f for f, behaviors in self.annotations.items() 
+                                     if (isinstance(behaviors, list) and behavior in behaviors) 
+                                     or behaviors == behavior])
             
-            if current_start is not None:
-                segments.append((current_start, self.total_frames - 1))
+            if not behavior_frames:
+                continue
+
+            # Group consecutive frames into segments
+            current_start = behavior_frames[0]
+            for i in range(1, len(behavior_frames)):
+                if behavior_frames[i] != behavior_frames[i-1] + 1:
+                    segments.append((current_start, behavior_frames[i-1]))
+                    current_start = behavior_frames[i]
+            segments.append((current_start, behavior_frames[-1]))
             
             behavior_segments[behavior] = segments
 

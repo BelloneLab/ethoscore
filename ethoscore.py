@@ -407,6 +407,7 @@ class VideoAnnotator(QMainWindow):
         self.timeline.frame_clicked.connect(self.video_player.goto_frame)
         self.timeline.drag_started.connect(self.video_player._start_timeline_drag)
         self.timeline.drag_ended.connect(self.video_player._end_timeline_drag)
+        self.timeline.segment_clicked.connect(self.on_segment_clicked)
 
         # Timer for gamepad polling
         self.gamepad_timer = QTimer(self)
@@ -628,6 +629,9 @@ class VideoAnnotator(QMainWindow):
         input_settings_action.triggered.connect(self.show_input_settings_dialog)
         gamification_settings_action = settings_menu.addAction('Gamification Settings')
         gamification_settings_action.triggered.connect(self.show_gamification_settings_dialog)
+        settings_menu.addSeparator()
+        rescan_controllers_action = settings_menu.addAction('Rescan Controllers')
+        rescan_controllers_action.triggered.connect(self.rescan_controllers)
 
 
     def load_settings(self):
@@ -1019,6 +1023,23 @@ class VideoAnnotator(QMainWindow):
         dialog = GamificationSettingsDialog(self.gamification_manager, self)
         if dialog.exec() == QDialog.Accepted:
             self.gamification_manager.save_settings(self.gamification_settings)
+
+    def rescan_controllers(self):
+        """Rescan for game controllers"""
+        # First ensure pygame joystick is reinitialized
+        try:
+            pygame.joystick.quit()
+            pygame.joystick.init()
+            
+            # Then reinitialize the video player's gamepad
+            self.video_player.init_gamepad()
+            
+            if self.video_player.joystick:
+                self.statusBar().showMessage(f"Controller detected: {self.video_player.joystick.get_name()}", 3000)
+            else:
+                self.statusBar().showMessage("No controller detected", 3000)
+        except Exception as e:
+            self.statusBar().showMessage(f"Error rescanning controllers: {str(e)}", 3000)
 
     def restore_default_general_settings(self):
         """Restore default general settings"""
@@ -1637,6 +1658,80 @@ class VideoAnnotator(QMainWindow):
         handle_behavior_removal(self.annotations, behavior, self.behavior_buttons.behaviors)
         # Update timeline
         self.update_timeline_annotations()
+
+    def on_segment_clicked(self, behavior, start, end, clicked_frame, red_line_frame, button):
+        """Handle left and right clicks on timeline segments"""
+        if self.view_only_mode:
+            return
+
+        self.push_undo_state()
+        
+        if button == Qt.LeftButton:
+            if start <= red_line_frame <= end:
+                # Cut: remove at red_line_frame
+                self._remove_behavior_from_frame(red_line_frame, behavior)
+            else:
+                # Extend to red line
+                if red_line_frame < start:
+                    # Extend backwards from start to red_line_frame
+                    for f in range(red_line_frame, start):
+                        self._add_behavior_to_frame(f, behavior)
+                elif red_line_frame > end:
+                    # Extend forwards from end to red_line_frame
+                    # Respect include_last_frame_in_range
+                    stop_frame = red_line_frame if self.include_last_frame_in_range else red_line_frame - 1
+                    for f in range(end + 1, stop_frame + 1):
+                        self._add_behavior_to_frame(f, behavior)
+                        
+        elif button == Qt.RightButton:
+            if not (start <= red_line_frame <= end):
+                # Delete whole segment
+                for f in range(start, end + 1):
+                    self._remove_behavior_from_frame(f, behavior)
+            else:
+                # Delete part based on which side was clicked
+                if clicked_frame < red_line_frame:
+                    # Delete from start to red_line_frame - 1 (the left part)
+                    for f in range(start, red_line_frame):
+                        self._remove_behavior_from_frame(f, behavior)
+                else:
+                    # Delete from red_line_frame + 1 to end (the right part)
+                    # "Cropping on the right" - respect include_last_frame_in_range
+                    delete_start = red_line_frame + 1 if self.include_last_frame_in_range else red_line_frame
+                    for f in range(delete_start, end + 1):
+                        self._remove_behavior_from_frame(f, behavior)
+        
+        self.update_timeline_annotations()
+        self.video_player.update_frame_display()
+        self.statusBar().showMessage(f"Modified {behavior} segment", 2000)
+
+    def _add_behavior_to_frame(self, frame, behavior):
+        """Helper to add a behavior to a specific frame"""
+        if frame < 0 or frame >= self.video_player.total_frames:
+            return
+            
+        current_behaviors = self.annotations.get(frame, [])
+        if not isinstance(current_behaviors, list):
+            current_behaviors = [current_behaviors] if current_behaviors else []
+            
+        if behavior not in current_behaviors:
+            current_behaviors.append(behavior)
+            self.annotations[frame] = current_behaviors
+            self.gamification_manager.label_applied(frame, behavior)
+
+    def _remove_behavior_from_frame(self, frame, behavior):
+        """Helper to remove a behavior from a specific frame"""
+        if frame in self.annotations:
+            current_behaviors = self.annotations[frame]
+            if isinstance(current_behaviors, list):
+                if behavior in current_behaviors:
+                    current_behaviors.remove(behavior)
+                    self.gamification_manager.label_removed(frame, behavior)
+                    if not current_behaviors:
+                        del self.annotations[frame]
+            elif current_behaviors == behavior:
+                del self.annotations[frame]
+                self.gamification_manager.label_removed(frame, behavior)
 
     def on_check_label_removal(self, target_frame):
         """Check if labels should be removed from subsequent frames when moving backwards with key held or behavior active"""

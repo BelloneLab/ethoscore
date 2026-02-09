@@ -35,10 +35,10 @@ python ethoscore.py
 1. Launch the application
 2. Select a video file (MP4, AVI, MOV, MKV, WMV)
 3. Label frames using behavior buttons or keyboard shortcuts
-4. Navigate with arrow keys or gamepad
+4. Navigate with arrow keys, mouse or gamepad
 5. Annotations auto-save as CSV files
 
-### Controls
+### Keyboard controls
 - **Arrow Keys**: Navigate frames
 - **Shift + Arrows**: Jump larger increments (configurable)
 - **Number Keys**: Toggle behaviors
@@ -48,6 +48,11 @@ python ethoscore.py
 - **Ctrl+O**: Load video
 - **Ctrl+N**: Load next video
 
+### Mouse controls
+- **Timeline dragging**: Move through frames
+- **Left click on label**: extend the label to the actual frame (left or right)
+- **Right click on label**: delete the label / delete the section of the label until the actual frame
+
 ### Gamepad
 - **Left Analog Stick**: Frame navigation
 - **Buttons**: Fully mappable to behaviors, erasing, undoing, or fast-forwarding using the in-app mapping utility
@@ -55,6 +60,7 @@ python ethoscore.py
 ### Settings
 - **Input Settings**: Keyboard shortcuts and advanced controller mappings (deadzones, sensitivity)
 - **General Settings**: Auto-save, UI preferences, Multitrack toggle
+- **Rescan Controllers**: If you controller was disconnected, relink it here instead of restarting ethoscore
 
 ## Data Format
 
@@ -71,5 +77,4 @@ Frames,nose-to-nose,nose-to-body,anogenital,passive,rearing,fighting,mounting
 
 ## Roadmap
 
-- Enhanced caching for large videos
-- Selective erasing in multitrack mode 
+- Selective erasing in multitrack mode for controllers

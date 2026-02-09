@@ -99,6 +99,7 @@ class FramePreloader(QThread):
     def run(self):
         """Preload frames in background thread"""
         preloaded_count = 0
+        last_read_frame = -1
         for i in range(self.num_frames_to_preload):
             if not self._is_running:
                 break
@@ -108,8 +109,11 @@ class FramePreloader(QThread):
                 if self.cache.get(frame_num) is None:
                     # Read and cache frame
                     with self.lock:
-                        self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
+                        if frame_num != last_read_frame + 1:
+                            self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
                         ret, frame = self.video_capture.read()
+                        if ret:
+                            last_read_frame = frame_num
                     if ret:
                         # Convert BGR to RGB
                         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -214,6 +218,10 @@ class VideoPlayer(QLabel):
         # Display scaling state
         self.target_width = 640
         self.target_height = 480
+        self.is_scrubbing = False
+        self.scrubbing_timer = QTimer()
+        self.scrubbing_timer.setSingleShot(True)
+        self.scrubbing_timer.timeout.connect(self.stop_scrubbing)
 
         # Frame caching and preloading
         self.frame_cache = FrameCache(max_size=500)
@@ -228,8 +236,14 @@ class VideoPlayer(QLabel):
 
         # Thread safety for video_capture
         self.video_capture_lock = threading.Lock()
+        self.last_read_frame = -1
 
         self.setup_ui()
+
+    def stop_scrubbing(self):
+        """Reset scrubbing flag and redraw with high quality"""
+        self.is_scrubbing = False
+        self.update_frame_display()
 
     def setup_ui(self):
         self.setAlignment(Qt.AlignCenter)
@@ -303,6 +317,7 @@ class VideoPlayer(QLabel):
             self.right_stick_x_axis = 0
             self.right_stick_y_axis = 1 # Assuming Axis 1 is Y for the right stick
         else:
+            self.joystick = None
             print("No gamepad detected.")
 
     def update_input_settings(self, settings):
@@ -360,6 +375,7 @@ class VideoPlayer(QLabel):
         self.total_frames = int(self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
         self.frame_rate = self.video_capture.get(cv2.CAP_PROP_FPS)
         self.current_frame = 0
+        self.last_read_frame = -1
         self.active_labels = {}  # Reset active labels
         self.held_behavior = None  # Reset held behavior
         self.current_behavior = None  # Reset current behavior
@@ -400,11 +416,15 @@ class VideoPlayer(QLabel):
         if cached_pixmap is None:
             # Frame not in cache, read from disk
             with self.video_capture_lock:
-                self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame)
+                # Optimization: only set position if not sequential
+                if self.current_frame != self.last_read_frame + 1:
+                    self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame)
+                
                 ret, frame = self.video_capture.read()
-
-            if not ret:
-                return
+                if ret:
+                    self.last_read_frame = self.current_frame
+                else:
+                    return
 
             # Convert BGR to RGB
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -529,9 +549,10 @@ class VideoPlayer(QLabel):
     def scale_and_set_pixmap(self):
         """Scale the original pixmap to fit the label while maintaining aspect ratio"""
         if hasattr(self, 'original_pixmap') and self.original_pixmap:
+            transform = Qt.FastTransformation if self.is_scrubbing else Qt.SmoothTransformation
             scaled_pixmap = self.original_pixmap.scaled(
                 self.target_width, self.target_height,
-                Qt.KeepAspectRatio, Qt.SmoothTransformation
+                Qt.KeepAspectRatio, transform
             )
             self.setPixmap(scaled_pixmap)
             self.update()  # Force repaint
@@ -702,6 +723,10 @@ class VideoPlayer(QLabel):
 
     def on_navigation_timer(self):
         """Handle continuous navigation when arrow keys are held"""
+        # Mark as scrubbing and start/restart the reset timer
+        self.is_scrubbing = True
+        self.scrubbing_timer.start(300)
+
         # Check if frame-by-frame navigation is needed (hold label)
         needs_frame_by_frame = hasattr(self, 'held_behavior') and self.held_behavior is not None
 
@@ -890,6 +915,10 @@ class VideoPlayer(QLabel):
                 step = int(self.gamepad_frame_accumulator)
 
                 if step != 0:
+                    # Mark as scrubbing and start/restart the reset timer
+                    self.is_scrubbing = True
+                    self.scrubbing_timer.start(300) # Reset after 300ms of no movement
+
                     # Check if there are active labels for continuous labeling, removing mode, or held behavior
                     active_behaviors = [b for b, active in self.active_labels.items() if active]
                     has_active_labels = len(active_behaviors) > 0
@@ -897,19 +926,9 @@ class VideoPlayer(QLabel):
                     needs_frame_by_frame = has_active_labels or self.removing_mode or has_held_behavior
 
                     if step > 0: # Move forward
-                        if needs_frame_by_frame:
-                            # When labeling or removing is active, move frame by frame to ensure continuous operation
-                            for _ in range(step):
-                                self.next_frame(1)
-                        else:
-                            self.next_frame(step)
+                        self.next_frame(step)
                     else: # Move backward
-                        if needs_frame_by_frame:
-                            # When labeling or removing is active, move frame by frame
-                            for _ in range(abs(step)):
-                                self.prev_frame(1)
-                        else:
-                            self.prev_frame(abs(step))
+                        self.prev_frame(abs(step))
                     self.gamepad_frame_accumulator -= step # Subtract the integer part
             else:
                 # If stick is within threshold, slowly decay the accumulator to prevent drift
@@ -1230,6 +1249,9 @@ class VideoPlayer(QLabel):
 
     def _start_timeline_drag(self, start_frame):
         """Handle the start of timeline dragging for range labeling"""
+        self.is_scrubbing = True
+        self.scrubbing_timer.stop() # Stop reset timer during active drag
+
         # Check if any label keys are currently held
         active_behaviors = [b for b, held in self.label_key_held.items() if held]
         if active_behaviors:
@@ -1245,6 +1267,9 @@ class VideoPlayer(QLabel):
 
     def _end_timeline_drag(self, end_frame=None):
         """Handle the end of timeline dragging for range labeling"""
+        self.is_scrubbing = False
+        self.update_frame_display()
+
         from annotator_libs.annotation_logic import apply_range_label
         # Use self.current_frame as the end_frame for applying the label.
         actual_end_frame = self.current_frame
