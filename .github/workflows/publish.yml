@@ -27,7 +27,7 @@ jobs:
 
     - name: Build with PyInstaller
       run: |
-        pyinstaller --onefile --windowed --add-data "assets;assets" --name ethoscore ethoscore.py
+        pyinstaller --onefile --windowed --add-data "assets;assets" --add-data "annotator_libs;annotator_libs" --name ethoscore ethoscore.py
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
@@ -54,7 +54,7 @@ jobs:
 
     - name: Build with PyInstaller
       run: |
-        pyinstaller --onefile --add-data "assets:assets" --name ethoscore ethoscore.py
+        pyinstaller --onefile --add-data "assets:assets" --add-data "annotator_libs:annotator_libs" --name ethoscore ethoscore.py
 
     - name: Create AppImage
       run: |
