@@ -63,16 +63,16 @@ jobs:
         wget https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
         chmod +x linuxdeploy-x86_64.AppImage
         
-        # Prepare AppDir
-        mkdir -p AppDir
-        cp dist/ethoscore AppDir/
+        # Prepare AppDir structure
+        mkdir -p AppDir/usr/bin
+        cp dist/ethoscore AppDir/usr/bin/
+        chmod +x AppDir/usr/bin/ethoscore
         cp ethoscore.desktop AppDir/
         cp assets/controller-logo.svg AppDir/ethoscore.svg
         
         # Run linuxdeploy
-        # We use --appimage-extract-and-run because we are inside a container/VM that might not have FUSE
         export ARCH=x86_64
-        ./linuxdeploy-x86_64.AppImage --appimage-extract-and-run --appdir AppDir -d ethoscore.desktop -i AppDir/ethoscore.svg --output appimage
+        ./linuxdeploy-x86_64.AppImage --appimage-extract-and-run --appdir AppDir -e AppDir/usr/bin/ethoscore -d ethoscore.desktop -i AppDir/ethoscore.svg --output appimage
         
         # Rename output
         mv Ethoscore-x86_64.AppImage dist/ethoscore.AppImage
