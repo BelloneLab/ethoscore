@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Ethoscore
+Exec=ethoscore
+Icon=ethoscore
+Categories=Science;Education;
+Comment=Video Behavior Annotator
+Terminal=false

@@ -3,6 +3,17 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, Q
 from PySide6.QtCore import Qt, Signal, QSize, QPropertyAnimation, QEasingCurve, QRect, QTimer
 from PySide6.QtGui import QPainter, QPen, QColor, QFont, QPaintEvent, QPixmap, QImage, QTransform
 import os
+import sys
+
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
 
 
 def get_friendly_controller_name(button_str):
@@ -862,8 +873,10 @@ class LoadingScreen(QWidget):
     A loading screen widget that displays a mouse logo SVG and a loading bar,
     both animating from left to right.
     """
-    def __init__(self, parent=None, svg_path="assets/mouse-logo.svg"):
+    def __init__(self, parent=None, svg_path=None):
         super().__init__(parent)
+        if svg_path is None:
+            svg_path = resource_path("assets/mouse-logo.svg")
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setStyleSheet("background-color: rgba(0, 0, 0, 200);")
         self.setWindowFlags(Qt.FramelessWindowHint)

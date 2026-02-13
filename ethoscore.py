@@ -5,6 +5,16 @@ import pandas as pd
 import json
 import warnings
 
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
+
 # Suppress warnings before importing modules that might trigger them
 warnings.filterwarnings("ignore", category=UserWarning, module="pkg_resources")
 warnings.filterwarnings("ignore")
@@ -127,7 +137,7 @@ class WelcomeDialog(QDialog):
         top_row.addStretch()
 
         # Logo - conditionally show controller or keyboard logo (right)
-        logo_file = "assets/controller-logo.svg" if self.controller_count > 0 else "assets/keyboard-logo.svg"
+        logo_file = resource_path("assets/controller-logo.svg") if self.controller_count > 0 else resource_path("assets/keyboard-logo.svg")
         self.logo_widget = QSvgWidget(logo_file)
         self.logo_widget.setFixedSize(80, 80)
         top_row.addWidget(self.logo_widget, alignment=Qt.AlignRight)
@@ -238,7 +248,7 @@ class WelcomeDialog(QDialog):
                 self.controller_name = "Controller detected"
 
         # Update logo based on new controller count
-        logo_file = "assets/controller-logo.svg" if self.controller_count > 0 else "assets/keyboard-logo.svg"
+        logo_file = resource_path("assets/controller-logo.svg") if self.controller_count > 0 else resource_path("assets/keyboard-logo.svg")
         self.logo_widget.load(logo_file)
 
         # Emit signal to notify main application that controllers were rescanned
