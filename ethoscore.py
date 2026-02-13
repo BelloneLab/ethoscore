@@ -183,12 +183,9 @@ class WelcomeDialog(QDialog):
         # Update button visibility based on last video availability
         self.update_button_visibility()
 
-        # Update button visibility based on last video availability
-        self.update_button_visibility()
-
     def update_button_visibility(self):
         """Update button visibility based on whether last video exists"""
-        has_last_video = self.last_video_path and os.path.exists(self.last_video_path)
+        has_last_video = bool(self.last_video_path and os.path.exists(self.last_video_path))
 
         # Show/hide buttons based on last video availability
         self.open_last_btn.setVisible(has_last_video)
