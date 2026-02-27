@@ -1,10 +1,11 @@
 import os
 import pandas as pd
+import numpy as np
 from PySide6.QtWidgets import QMessageBox, QStatusBar
 
 
 def load_annotations_from_csv(video_path, behaviors, parent=None):
-    """Load annotations from CSV file if it exists"""
+    """Load annotations from CSV file if it exists using optimized NumPy access"""
     csv_path = os.path.splitext(video_path)[0] + '.csv'
     annotations = {}  # frame_number -> list of behaviors
 
@@ -31,17 +32,31 @@ def load_annotations_from_csv(video_path, behaviors, parent=None):
                     # User chose not to sync, return empty annotations
                     return annotations
 
-            # Load annotations
-            for idx, row in df.iterrows():
-                frame = int(row['Frames']) - 1  # 0-based
-                frame_behaviors = []
-                for b in behaviors_in_csv:
-                    if b in behaviors and row[b] == 1: 
-                        frame_behaviors.append(b)
-                if frame_behaviors:
-                    annotations[frame] = frame_behaviors
+            # Optimized loading using NumPy
+            # Filter columns to only those in behaviors
+            valid_cols = [b for b in behaviors_in_csv if b in behaviors]
+            if not valid_cols:
+                return annotations
+
+            # Get frame numbers and behavior data as NumPy arrays
+            frames = (df['Frames'].values - 1).astype(int)
+            data = df[valid_cols].values
+
+            # Find where labels are present (1s)
+            rows, cols = np.where(data == 1)
+            
+            # Map column indices back to behavior names
+            for row_idx, col_idx in zip(rows, cols):
+                frame = frames[row_idx]
+                behavior = valid_cols[col_idx]
+                
+                if frame not in annotations:
+                    annotations[frame] = []
+                annotations[frame].append(behavior)
 
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             QMessageBox.warning(parent, "Error", f"Could not load annotations: {str(e)}")
 
     return annotations
@@ -103,22 +118,9 @@ def sync_video_csv_with_template(df, template_behaviors, csv_path, parent=None):
 
     # Handle missing behaviors
     if missing_in_template and not hide_missing:
-        # Delete rows that have missing behaviors set to 1
-        rows_to_keep = []
-        for idx, row in df.iterrows():
-            keep_row = True
-            for missing_behavior in missing_in_template:
-                if row[missing_behavior] == 1:
-                    keep_row = False
-                    break
-            if keep_row:
-                rows_to_keep.append(idx)
-
-        if rows_to_keep:
-            synced_df = synced_df.loc[rows_to_keep].reset_index(drop=True)
-        else:
-            QMessageBox.warning(parent, "Warning", "All rows would be deleted. Keeping original data.")
-            return df
+        # Optimized row deletion using NumPy
+        mask = (df[list(missing_in_template)] == 1).any(axis=1)
+        synced_df = synced_df[~mask.values].reset_index(drop=True)
 
     # Save the synced CSV
     csv_path = df.attrs.get('filename', 'synced.csv') if hasattr(df, 'attrs') else 'synced.csv'
@@ -128,7 +130,7 @@ def sync_video_csv_with_template(df, template_behaviors, csv_path, parent=None):
 
 
 def save_annotations_to_csv(video_path, annotations, behaviors, status_bar=None):
-    """Save annotations to CSV file in video2_2.csv format"""
+    """Save annotations to CSV file using optimized NumPy operations"""
     if not video_path:
         if status_bar:
             status_bar.showMessage("Error: No video loaded. Cannot save annotations.", 3000)
@@ -137,24 +139,35 @@ def save_annotations_to_csv(video_path, annotations, behaviors, status_bar=None)
         return
 
     csv_path = os.path.splitext(video_path)[0] + '.csv'
-
-    # Create data dict
-    data = {'Frames': list(range(1, get_total_frames_from_video(video_path) + 1))}
-    for b in behaviors:
-        data[b] = []
-
     total_frames = get_total_frames_from_video(video_path)
-    for frame in range(total_frames):
-        active_list = annotations.get(frame, [])
-        for b in behaviors:
-            # Handle both old (single string) and new (list) annotation formats
+    if total_frames == 0:
+        return
+
+    # Use NumPy for fast data preparation
+    num_behaviors = len(behaviors)
+    behavior_to_idx = {b: i for i, b in enumerate(behaviors)}
+    
+    # Create zeroed array
+    arr = np.zeros((total_frames, num_behaviors), dtype=np.int8)
+    
+    # Fill array from annotations dict
+    for frame, active_list in annotations.items():
+        if frame < total_frames:
             if isinstance(active_list, list):
-                data[b].append(1 if b in active_list else 0)
-            else:
-                data[b].append(1 if b == active_list else 0)
+                for b in active_list:
+                    if b in behavior_to_idx:
+                        arr[frame, behavior_to_idx[b]] = 1
+            elif active_list in behavior_to_idx:
+                arr[frame, behavior_to_idx[active_list]] = 1
+    
+    # Create DataFrame
+    data = {'Frames': np.arange(1, total_frames + 1)}
+    for i, b in enumerate(behaviors):
+        data[b] = arr[:, i]
 
     df = pd.DataFrame(data)
     df.to_csv(csv_path, index=False)
+    
     if status_bar:
         status_bar.showMessage(f"Annotations saved to {csv_path}", 2000)
     else:

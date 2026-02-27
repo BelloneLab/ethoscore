@@ -64,7 +64,11 @@ python ethoscore.py
 
 ## Data Format
 
-Annotations saved as CSV with video filename. Here is a simple example:
+Annotations are saved as CSV files named after your video. 
+
+**Pro Tip:** Any annotation CSV can be used as a **Behavior Template** via `File > Load Behaviors`. This will automatically set up your behavior buttons using the CSV's column headers.
+
+### CSV Example:
 ```
 Frames,nose-to-nose,nose-to-body,anogenital,passive,rearing,fighting,mounting
 1,0,0,0,0,0,0,0

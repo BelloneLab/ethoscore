@@ -470,6 +470,9 @@ class TimelineWidget(QWidget):
         self.annotations = {}  # frame -> behavior
         self.behavior_colors = {}  # behavior -> color
         self.max_tracks = 1
+        self._cached_sorted_behaviors = None
+        self._cached_behavior_segments = None
+        self._annotations_dirty = True
 
         # Set minimum zoom to show all frames, maximum zoom to show 1 frame per pixel
         self.min_zoom = 0.01
@@ -506,12 +509,14 @@ class TimelineWidget(QWidget):
         """Set annotations and behavior colors for display"""
         self.annotations = annotations
         self.behavior_colors = behavior_colors
+        self._annotations_dirty = True
         self._update_height()
         self.update()
 
     def set_range_preview(self, behavior, start_frame, current_frame):
         """Set the range labeling preview for display"""
         self.preview_behaviors[behavior] = (start_frame, current_frame)
+        self._annotations_dirty = True
         self._update_height()
         self.update()
 
@@ -522,6 +527,7 @@ class TimelineWidget(QWidget):
         else:
             if behavior in self.preview_behaviors:
                 del self.preview_behaviors[behavior]
+        self._annotations_dirty = True
         self._update_height()
         self.update()
 
@@ -731,15 +737,26 @@ class TimelineWidget(QWidget):
                 painter.drawLine(int(x_pos), 0, int(x_pos), height)
 
     def get_sorted_behaviors(self):
-        """Get sorted list of all behaviors in annotations and previews"""
-        all_present_behaviors = set()
-        for behaviors in self.annotations.values():
-            if isinstance(behaviors, list):
-                all_present_behaviors.update(behaviors)
-            elif behaviors:
-                all_present_behaviors.add(behaviors)
-        all_present_behaviors.update(self.preview_behaviors.keys())
-        return sorted(list(all_present_behaviors))
+        """Get list of all behaviors to display as tracks with caching"""
+        if not self._annotations_dirty and self._cached_sorted_behaviors is not None:
+            return self._cached_sorted_behaviors
+
+        # Use all behaviors from the behavior_colors dict to ensure fixed tracks
+        # in the order they were provided (from BehaviorButtons.behaviors)
+        if self.behavior_colors:
+            self._cached_sorted_behaviors = list(self.behavior_colors.keys())
+        else:
+            # Fallback for startup if no colors provided yet
+            all_present_behaviors = set()
+            for behaviors in self.annotations.values():
+                if isinstance(behaviors, list):
+                    all_present_behaviors.update(behaviors)
+                elif behaviors:
+                    all_present_behaviors.add(behaviors)
+            all_present_behaviors.update(self.preview_behaviors.keys())
+            self._cached_sorted_behaviors = sorted(list(all_present_behaviors))
+            
+        return self._cached_sorted_behaviors
 
     def draw_behavior_segments(self, painter, width, height):
         """Draw colored segments for behavior annotations, supporting multiple tracks"""
@@ -747,36 +764,46 @@ class TimelineWidget(QWidget):
         if not sorted_behaviors:
             return
 
-        # Group consecutive frames for EACH behavior separately
-        behavior_segments = {} # behavior -> list of (start, end)
-        
-        for behavior in sorted_behaviors:
-            segments = []
+        # Group consecutive frames for EACH behavior separately if data is dirty
+        if self._annotations_dirty or self._cached_behavior_segments is None:
+            self._cached_behavior_segments = {b: [] for b in sorted_behaviors} # behavior -> list of (start, end)
             
-            # Find frames that have this behavior, sorted
-            behavior_frames = sorted([f for f, behaviors in self.annotations.items() 
-                                     if (isinstance(behaviors, list) and behavior in behaviors) 
-                                     or behaviors == behavior])
-            
-            if not behavior_frames:
-                continue
+            # Efficiently group frames by behavior in one pass
+            behavior_to_frames = {b: [] for b in sorted_behaviors}
+            for frame, behaviors in self.annotations.items():
+                if isinstance(behaviors, list):
+                    for b in behaviors:
+                        if b in behavior_to_frames:
+                            behavior_to_frames[b].append(frame)
+                elif behaviors in behavior_to_frames:
+                    behavior_to_frames[behaviors].append(frame)
 
-            # Group consecutive frames into segments
-            current_start = behavior_frames[0]
-            for i in range(1, len(behavior_frames)):
-                if behavior_frames[i] != behavior_frames[i-1] + 1:
-                    segments.append((current_start, behavior_frames[i-1]))
-                    current_start = behavior_frames[i]
-            segments.append((current_start, behavior_frames[-1]))
+            for behavior in sorted_behaviors:
+                # Find frames that have this behavior, sorted
+                behavior_frames = sorted(behavior_to_frames[behavior])
+                
+                if not behavior_frames:
+                    continue
+
+                # Group consecutive frames into segments
+                segments = []
+                current_start = behavior_frames[0]
+                for i in range(1, len(behavior_frames)):
+                    if behavior_frames[i] != behavior_frames[i-1] + 1:
+                        segments.append((current_start, behavior_frames[i-1]))
+                        current_start = behavior_frames[i]
+                segments.append((current_start, behavior_frames[-1]))
+                
+                self._cached_behavior_segments[behavior] = segments
             
-            behavior_segments[behavior] = segments
+            self._annotations_dirty = False
 
         # Draw segments
         num_total_behaviors = len(sorted_behaviors)
         track_height = (height - 10) / num_total_behaviors
         
         for behavior_idx, behavior in enumerate(sorted_behaviors):
-            segments = behavior_segments.get(behavior, [])
+            segments = self._cached_behavior_segments.get(behavior, [])
             if not segments:
                 continue
                 
@@ -816,6 +843,8 @@ class TimelineWidget(QWidget):
             if start_frame == -1 or end_frame == -1:
                 continue
 
+            if behavior not in sorted_behaviors:
+                continue
             behavior_idx = sorted_behaviors.index(behavior)
             y_pos = 5 + behavior_idx * track_height
 
@@ -857,10 +886,15 @@ class TimelineWidget(QWidget):
 
         painter.setPen(QPen(QColor(100, 100, 100), 1))
 
-        start_frame = max(0, int(self.scroll_offset))
+        # Start from the first marker before or at scroll_offset
+        start_frame_offset = int(self.scroll_offset)
+        first_marker = (start_frame_offset // marker_interval) * marker_interval
+        
         end_frame = min(self.total_frames, int(self.scroll_offset + width / pixels_per_frame) + 1)
 
-        for frame in range(start_frame, end_frame, marker_interval):
+        for frame in range(first_marker, end_frame, marker_interval):
+            if frame < 0:
+                continue
             x_pos = self.frame_to_x(frame)
             if 0 <= x_pos <= width:
                 painter.drawLine(int(x_pos), height // 2 - 5, int(x_pos), height // 2 + 5)

@@ -223,6 +223,12 @@ class VideoPlayer(QLabel):
         self.scrubbing_timer.setSingleShot(True)
         self.scrubbing_timer.timeout.connect(self.stop_scrubbing)
 
+        # Deferred seek timer for smoother dragging
+        self.deferred_seek_timer = QTimer()
+        self.deferred_seek_timer.setSingleShot(True)
+        self.deferred_seek_timer.setInterval(16)  # 60 FPS throttle for video seeking
+        self.deferred_seek_timer.timeout.connect(self._perform_deferred_seek)
+
         # Frame caching and preloading
         self.frame_cache = FrameCache(max_size=500)
         self.preloader = None
@@ -676,6 +682,27 @@ class VideoPlayer(QLabel):
                 # Clear any lingering preview if no range labeling is active
                 self.timeline.clear_range_preview()
 
+        # Throttled update: Use deferred seek for smoother dragging
+        if self.is_scrubbing:
+            # If it's the first move or enough time has passed, update immediately
+            # Otherwise, use the timer to throttle OpenCV seeks
+            if not self.deferred_seek_timer.isActive():
+                # For the very first frame of a scrub, we could update immediately,
+                # but a short delay helps maintain UI fluidity if the user is just passing through.
+                # However, to avoid "choppiness", we ensure it fires regularly.
+                self.deferred_seek_timer.start()
+            
+            # Still emit frame_changed so labels and timeline update immediately
+            self.frame_changed.emit(self.current_frame)
+            # Redraw labels/marker without seeking the video yet
+            self.update() 
+        else:
+            # If not scrubbing (e.g. single step), update immediately
+            self.deferred_seek_timer.stop()
+            self.update_frame_display()
+
+    def _perform_deferred_seek(self):
+        """Actually perform the video seek and display the frame"""
         self.update_frame_display()
 
     def next_frame(self, step=1):
