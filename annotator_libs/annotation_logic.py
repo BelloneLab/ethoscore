@@ -382,6 +382,51 @@ def remove_range_labels(annotations, start_frame, end_frame):
             del annotations[frame]
 
 
+def remove_behavior_from_range(annotations, behavior, start_frame, end_frame):
+    """Remove a specific behavior from a range of frames"""
+    if start_frame > end_frame:
+        start_frame, end_frame = end_frame, start_frame
+
+    for frame in range(start_frame, end_frame + 1):
+        if frame in annotations:
+            behaviors = annotations[frame]
+            if isinstance(behaviors, list):
+                if behavior in behaviors:
+                    behaviors.remove(behavior)
+                if not behaviors:
+                    del annotations[frame]
+                else:
+                    annotations[frame] = behaviors
+            elif behaviors == behavior:
+                del annotations[frame]
+
+
+def change_label_type_in_range(annotations, old_behavior, new_behavior, start_frame, end_frame):
+    """Change label type for a range of frames"""
+    if start_frame > end_frame:
+        start_frame, end_frame = end_frame, start_frame
+
+    for frame in range(start_frame, end_frame + 1):
+        if frame in annotations:
+            behaviors = annotations[frame]
+            if isinstance(behaviors, list):
+                if old_behavior in behaviors:
+                    behaviors.remove(old_behavior)
+                if new_behavior not in behaviors:
+                    behaviors.append(new_behavior)
+                if not behaviors:
+                    del annotations[frame]
+                else:
+                    annotations[frame] = behaviors
+            elif behaviors == old_behavior:
+                annotations[frame] = [new_behavior]
+        else:
+            # If no behavior was present, but we are changing to new_behavior, 
+            # should we add it? The logic usually implies changing an existing label.
+            # For now, let's only change if something was there.
+            pass
+
+
 def handle_range_label_state_change(annotations, behavior, start_frame, end_frame, current_frame, video_player):
     """Handle range-based label state change - apply label to range and update UI"""
     # Apply the label to the range

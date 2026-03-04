@@ -455,6 +455,7 @@ class TimelineWidget(QWidget):
     drag_started = Signal(int)
     drag_ended = Signal(int)
     segment_clicked = Signal(str, int, int, int, int, Qt.MouseButton)
+    label_type_changed = Signal(str, str, int, int)  # old_behavior, new_behavior, start_frame, end_frame
 
     def __init__(self):
         super().__init__()
@@ -491,6 +492,12 @@ class TimelineWidget(QWidget):
         
         # Click state
         self.press_pos = None
+
+        # Vertical dragging state
+        self.is_dragging_vertical = False
+        self.dragging_segment = None # (behavior, start_frame, end_frame)
+        self.drag_preview_behavior = None
+        self.drag_current_y = 0
 
     def _update_height(self):
         """Update timeline height based on number of tracks"""
@@ -595,12 +602,20 @@ class TimelineWidget(QWidget):
         self.press_pos = event.position()
 
         if event.button() == Qt.LeftButton:
-            self.is_dragging = True
-            self.last_mouse_x = event.position().x()
-            self.drag_start_frame = self.current_frame  # Store frame where dragging started
+            # Check if we clicked on a segment
+            segment = self.get_segment_at(event.position().x(), event.position().y())
+            if segment:
+                self.dragging_segment = segment
+                self.drag_preview_behavior = segment[0]
+                self.drag_current_y = event.position().y()
+                self.is_dragging_vertical = True
+            else:
+                self.is_dragging = True
+                self.last_mouse_x = event.position().x()
+                self.drag_start_frame = self.current_frame  # Store frame where dragging started
 
             # Emit signal for drag start
-            self.drag_started.emit(self.drag_start_frame)
+            self.drag_started.emit(self.current_frame)
         elif event.button() == Qt.RightButton:
             segment = self.get_segment_at(event.position().x(), event.position().y())
             if segment:
@@ -610,6 +625,11 @@ class TimelineWidget(QWidget):
 
     def mouseMoveEvent(self, event):
         """Handle mouse movement during dragging"""
+        if self.is_dragging_vertical:
+            self.drag_current_y = event.position().y()
+            self.update()
+            return
+
         if self.is_dragging and self.total_frames > 0:
             # Calculate mouse movement delta from drag start
             mouse_delta = event.position().x() - self.last_mouse_x
@@ -633,6 +653,27 @@ class TimelineWidget(QWidget):
     def mouseReleaseEvent(self, event):
         """Handle mouse release to stop dragging or trigger left-click segment actions"""
         if event.button() == Qt.LeftButton:
+            if self.is_dragging_vertical:
+                self.is_dragging_vertical = False
+                old_behavior, start, end = self.dragging_segment
+                
+                # Check if it was more than a click
+                if self.press_pos and (event.position() - self.press_pos).manhattanLength() >= 10:
+                    if self.drag_preview_behavior and self.drag_preview_behavior != old_behavior:
+                        self.label_type_changed.emit(old_behavior, self.drag_preview_behavior, start, end)
+                else:
+                    # It was just a click, handle as regular segment click if needed
+                    segment = self.get_segment_at(event.position().x(), event.position().y())
+                    if segment:
+                        behavior, start, end = segment
+                        clicked_frame = self.x_to_frame(event.position().x())
+                        self.segment_clicked.emit(behavior, start, end, clicked_frame, self.current_frame, Qt.LeftButton)
+                
+                self.dragging_segment = None
+                self.drag_preview_behavior = None
+                self.update()
+                return
+
             self.is_dragging = False
 
             # Check if it was a quick click on a segment (minimal movement)
@@ -722,6 +763,9 @@ class TimelineWidget(QWidget):
         # Draw range labeling preview if active
         self.draw_range_preview(painter, width, height)
 
+        # Draw vertical drag preview if active
+        self.draw_vertical_drag_preview(painter, width, height)
+
         # Draw timeline axis
         painter.setPen(QPen(QColor(60, 60, 60), 1))
         painter.drawLine(0, height // 2, width, height // 2)
@@ -735,6 +779,43 @@ class TimelineWidget(QWidget):
             if 0 <= x_pos <= width:
                 painter.setPen(QPen(QColor(231, 76, 60), 2)) # Red color
                 painter.drawLine(int(x_pos), 0, int(x_pos), height)
+
+    def draw_vertical_drag_preview(self, painter, width, height):
+        """Draw a dotted contour for vertical drag preview"""
+        if not self.is_dragging_vertical or not self.dragging_segment:
+            return
+
+        sorted_behaviors = self.get_sorted_behaviors()
+        if not sorted_behaviors:
+            return
+
+        old_behavior, start, end = self.dragging_segment
+        
+        # Determine current behavior track based on mouse position
+        num_total_behaviors = len(sorted_behaviors)
+        track_height = (height - 10) / num_total_behaviors
+        
+        behavior_idx = int((self.drag_current_y - 5) / track_height)
+        behavior_idx = max(0, min(num_total_behaviors - 1, behavior_idx))
+        target_behavior = sorted_behaviors[behavior_idx]
+        self.drag_preview_behavior = target_behavior
+
+        y_pos = 5 + behavior_idx * track_height
+        
+        color = self.behavior_colors.get(target_behavior, "#CCCCCC")
+        q_color = QColor(color)
+
+        start_x = self.frame_to_x(start)
+        end_x = self.frame_to_x(end + 1)
+
+        if end_x > 0 and start_x < width:
+            visible_start = max(0, start_x)
+            visible_end = min(width, end_x)
+
+            if visible_start < visible_end:
+                # Draw a dashed border
+                painter.setPen(QPen(QColor(q_color.red(), q_color.green(), q_color.blue(), 200), 2, Qt.DashLine))
+                painter.drawRect(int(visible_start), int(y_pos), int(visible_end - visible_start), int(track_height))
 
     def get_sorted_behaviors(self):
         """Get list of all behaviors to display as tracks with caching"""

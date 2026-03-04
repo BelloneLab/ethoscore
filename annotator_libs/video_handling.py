@@ -142,6 +142,8 @@ class VideoPlayer(QLabel):
     caching_complete = Signal() # New signal to indicate caching is complete
     preload_progress = Signal(int, int) # current_preloaded, total_to_preload
     preload_finished = Signal() # Signal emitted when all preloading is complete
+    label_type_changed_request = Signal(str, str, int, int) # old_behavior, new_behavior, start_frame, end_frame
+    last_label_modification_requested = Signal(str, str, int, int) # action ('cut' or 'extend'), behavior, start, end
 
     def __init__(self, timeline=None):
         super().__init__()
@@ -164,6 +166,7 @@ class VideoPlayer(QLabel):
         self.current_behavior = None  # Current annotated behavior for display
         self.hold_timers = {}  # behavior -> QTimer for detecting long presses in 'both' mode
         self.clear_timers = {}  # behavior -> QTimer for delayed clearing in 'hold' mode
+        self.last_created_label = None # (behavior, start_frame, end_frame)
 
         # Navigation state
         self.navigation_timer = QTimer()
@@ -280,7 +283,7 @@ class VideoPlayer(QLabel):
 
         # Behavior label
         self.behavior_label = QLabel()
-        self.behavior_label.setStyleSheet("color: white; font-weight: bold;")
+        self.behavior_label.setStyleSheet("font-weight: bold;")
         overlay_layout.addWidget(self.behavior_label)
 
         self.next_bar = QLabel()
@@ -391,9 +394,10 @@ class VideoPlayer(QLabel):
         self.is_caching_finished = False # Reset caching status for new video
 
         # Setup progress bar
-        self.progress_bar.setMaximum(self.total_frames - 1)
+        self.progress_bar.setMinimum(0)
+        self.progress_bar.setMaximum(self.total_frames)
         self.progress_bar.setVisible(True) # Make progress bar visible
-        self.progress_bar.setValue(self.current_frame) # Set initial value
+        self.progress_bar.setValue(self.current_frame + 1) # Set initial value (1-based)
 
         # Position the progress bar
         self.resizeEvent(None)
@@ -465,19 +469,18 @@ class VideoPlayer(QLabel):
         has_actual_label = isinstance(self.current_behavior, list) and len(self.current_behavior) > 0
 
         if has_actual_label:
-            # Join behaviors if multiple
-            label_text = ", ".join(self.current_behavior)
-            # Set color based on first behavior
-            first_behavior = self.current_behavior[0]
-            label_color = self.get_behavior_color(first_behavior)
-            self.behavior_label.setStyleSheet(f"color: {label_color}; font-weight: bold;")
-            self.behavior_label.setText(label_text)
+            # Create colored parts for each behavior
+            colored_parts = []
+            for behavior in self.current_behavior:
+                color = self.get_behavior_color(behavior)
+                colored_parts.append(f'<span style="color: {color};">{behavior}</span>')
+            
+            label_text = ", ".join(colored_parts)
+            self.behavior_label.setText(f"<b>{label_text}</b>")
             self.annotation_overlay.setVisible(True)
         elif self.show_overlay_bars and (prev_color is not None or next_color is not None):
             # Current frame is empty, but adjacent frames have labels, and bars are enabled
-            label_text = "|"
-            label_color = "white" # Neutral color for the pipe symbol
-            self.behavior_label.setStyleSheet(f"color: {label_color}; font-weight: bold;")
+            label_text = '<b><span style="color: white;">|</span></b>'
             self.behavior_label.setText(label_text)
             self.annotation_overlay.setVisible(True)
         else:
@@ -635,7 +638,7 @@ class VideoPlayer(QLabel):
             "passive": "#BD23FF",
             "rearing": "#FFEAA7",
             "fighting": "#00FFC8",
-            "mounting": "FF8C00"
+            "mounting": "#FF8C00"
         }
         return colors.get(behavior, "#CCCCCC")
 
@@ -661,9 +664,8 @@ class VideoPlayer(QLabel):
 
         self.current_frame = frame_number
 
-        # Update progress bar only if no behavior is actively labeled
-        if not self.is_any_behavior_actively_labeled():
-            self.progress_bar.setValue(self.current_frame)
+        # Update progress bar (1-based for UI and CSV)
+        self.progress_bar.setValue(self.current_frame + 1)
 
         # Update current_behavior for the new frame BEFORE updating display
         active_behaviors_list = update_annotations_on_frame_change(
@@ -1082,6 +1084,14 @@ class VideoPlayer(QLabel):
                     self.remove_labels.emit()
                 elif behavior == "undo":
                     self.undo_requested.emit()
+                elif behavior == "move_label_up":
+                    self.move_last_label(-1)
+                elif behavior == "move_label_down":
+                    self.move_last_label(1)
+                elif behavior == "cut_label":
+                    self.modify_last_label("cut")
+                elif behavior == "extend_label":
+                    self.modify_last_label("extend")
                 self.gamepad_button_states[button_str] = True
             elif not is_pressed and self.gamepad_button_states.get(button_str, False):
                 # Button was just released
@@ -1126,6 +1136,8 @@ class VideoPlayer(QLabel):
                     from annotator_libs.annotation_logic import apply_range_label
                     apply_range_label(self.annotations, behavior, start_frame, end_frame, self.available_behaviors, 
                                       self.include_last_frame_in_range, self.multitrack_enabled)
+
+                    self.last_created_label = (behavior, start_frame, end_frame)
 
                     # Emit signal for the end of the label
                     self.label_toggled.emit(behavior, False, start_frame, end_frame) # Emit once for end with actual range
@@ -1178,6 +1190,8 @@ class VideoPlayer(QLabel):
                     # Apply the range label to actual annotations (CSV)
                     apply_range_label(self.annotations, behavior, start_frame, end_frame, self.available_behaviors, 
                                       self.include_last_frame_in_range, self.multitrack_enabled)
+                    
+                    self.last_created_label = (behavior, start_frame, end_frame)
 
                     # Emit signal for the end of the label
                     self.label_toggled.emit(behavior, False, start_frame, end_frame) # Emit once for end with actual range
@@ -1224,6 +1238,8 @@ class VideoPlayer(QLabel):
                         apply_range_label(self.annotations, behavior, start_frame, end_frame, self.available_behaviors, 
                                           self.include_last_frame_in_range, self.multitrack_enabled)
 
+                        self.last_created_label = (behavior, start_frame, end_frame)
+
                         # Emit signal for the end of the label
                         self.label_toggled.emit(behavior, False, start_frame, end_frame) # Emit once for end with actual range
 
@@ -1243,6 +1259,8 @@ class VideoPlayer(QLabel):
                         # Apply the range label to actual annotations (CSV)
                         apply_range_label(self.annotations, behavior, start_frame, end_frame, self.available_behaviors, 
                                           self.include_last_frame_in_range, self.multitrack_enabled)
+
+                        self.last_created_label = (behavior, start_frame, end_frame)
 
                         # Emit signal for the end of the label
                         self.label_toggled.emit(behavior, False, start_frame, end_frame) # Emit once for end with actual range
@@ -1310,6 +1328,8 @@ class VideoPlayer(QLabel):
                 apply_range_label(self.annotations, behavior, start_frame, actual_end_frame, self.available_behaviors, 
                                   self.include_last_frame_in_range, self.multitrack_enabled)
 
+                self.last_created_label = (behavior, start_frame, actual_end_frame)
+
                 # Clean up range labeling state
                 del self.range_labeling_active[behavior]
                 del self.range_labeling_start[behavior]
@@ -1323,3 +1343,30 @@ class VideoPlayer(QLabel):
 
         # Update UI
         self.update_frame_display()
+
+    def move_last_label(self, direction):
+        """Move the last created label up or down in the behavior list"""
+        if not self.last_created_label or not hasattr(self, 'available_behaviors'):
+            return
+
+        old_behavior, start_frame, end_frame = self.last_created_label
+        if old_behavior not in self.available_behaviors:
+            return
+
+        old_idx = self.available_behaviors.index(old_behavior)
+        new_idx = old_idx + direction
+
+        if 0 <= new_idx < len(self.available_behaviors):
+            new_behavior = self.available_behaviors[new_idx]
+            # Emit signal to change label type
+            self.label_type_changed_request.emit(old_behavior, new_behavior, start_frame, end_frame)
+            # Update last created label for next move
+            self.last_created_label = (new_behavior, start_frame, end_frame)
+
+    def modify_last_label(self, action):
+        """Request cut or extend on the last created label"""
+        if not self.last_created_label:
+            return
+        
+        behavior, start, end = self.last_created_label
+        self.last_label_modification_requested.emit(action, behavior, start, end)

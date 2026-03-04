@@ -417,6 +417,9 @@ class VideoAnnotator(QMainWindow):
         self.timeline.drag_started.connect(self.video_player._start_timeline_drag)
         self.timeline.drag_ended.connect(self.video_player._end_timeline_drag)
         self.timeline.segment_clicked.connect(self.on_segment_clicked)
+        self.timeline.label_type_changed.connect(self.change_label_type)
+        self.video_player.label_type_changed_request.connect(self.change_label_type)
+        self.video_player.last_label_modification_requested.connect(self.on_modify_last_label)
 
         # Timer for gamepad polling
         self.gamepad_timer = QTimer(self)
@@ -604,6 +607,25 @@ class VideoAnnotator(QMainWindow):
         self.video_player.update_frame_display()
         self.statusBar().showMessage("Undo successful", 2000)
 
+    def change_label_type(self, old_behavior, new_behavior, start_frame, end_frame):
+        """Change the type of a label range"""
+        if self.view_only_mode:
+            QMessageBox.information(self, "Preview Only Mode", "Cannot modify annotations in view-only mode.")
+            return
+
+        from annotator_libs.annotation_logic import change_label_type_in_range
+        
+        # Push undo state
+        self.push_undo_state()
+        
+        # Change label type in annotations
+        change_label_type_in_range(self.annotations, old_behavior, new_behavior, start_frame, end_frame)
+        
+        # Update UI
+        self.update_timeline_annotations()
+        self.video_player.update_frame_display()
+        self.statusBar().showMessage(f"Changed label from '{old_behavior}' to '{new_behavior}'", 2000)
+
     def on_label_toggled_for_gamification(self, behavior, is_active, start_frame, end_frame):
         """Handle label toggled events for gamification"""
         if is_active:
@@ -728,6 +750,8 @@ class VideoAnnotator(QMainWindow):
             'prev_frame': self.shortcut_settings.value('prev_frame', 'Left'),
             'delete': self.shortcut_settings.value('delete', 'Escape'),
             'undo': self.shortcut_settings.value('undo', 'Ctrl+Z'),
+            'move_label_up': self.shortcut_settings.value('move_label_up', 'Up'),
+            'move_label_down': self.shortcut_settings.value('move_label_down', 'Down'),
         }
         # Add behavior shortcuts 1-10
         for i in range(1, 11):
@@ -799,6 +823,8 @@ class VideoAnnotator(QMainWindow):
             'prev_frame': 'Previous Frame',
             'delete': 'Delete Labels',
             'undo': 'Undo Last Label',
+            'move_label_up': 'Move Last Label Up (Change Type)',
+            'move_label_down': 'Move Last Label Down (Change Type)',
         }
 
         # Add behavior shortcuts up to the number of behaviors
@@ -911,7 +937,7 @@ class VideoAnnotator(QMainWindow):
 
     def show_controller_automap_dialog(self):
         """Show the controller automapping dialog"""
-        dialog = ControllerAutomapDialog(self.behavior_buttons.behaviors + ["fast_forward", "erase", "undo"], self.video_player.controller_mappings, self)
+        dialog = ControllerAutomapDialog(self.behavior_buttons.behaviors + ["fast_forward", "erase", "undo", "move_label_up", "move_label_down", "cut_label", "extend_label"], self.video_player.controller_mappings, self)
         if dialog.exec() == QDialog.Accepted:
             self.video_player.controller_mappings = dialog.get_mappings()
             # Removed immediate save_controller_mappings() call here.
@@ -1677,19 +1703,23 @@ class VideoAnnotator(QMainWindow):
         
         if button == Qt.LeftButton:
             if start <= red_line_frame <= end:
-                # Cut: remove at red_line_frame
-                self._remove_behavior_from_frame(red_line_frame, behavior)
+                # Cut: remove from red_line_frame to end (improved from just removing 1 frame)
+                for f in range(red_line_frame, end + 1):
+                    self._remove_behavior_from_frame(f, behavior)
             else:
                 # Extend to red line
                 if red_line_frame < start:
                     # Extend backwards from start to red_line_frame
-                    for f in range(red_line_frame, start):
+                    # Respect include_last_frame_in_range
+                    start_add = red_line_frame if self.include_last_frame_in_range else red_line_frame + 1
+                    for f in range(start_add, start):
                         self._add_behavior_to_frame(f, behavior)
                 elif red_line_frame > end:
                     # Extend forwards from end to red_line_frame
                     # Respect include_last_frame_in_range
                     stop_frame = red_line_frame if self.include_last_frame_in_range else red_line_frame - 1
-                    for f in range(end + 1, stop_frame + 1):
+                    # Start from 'end' to ensure any hole at 'end + 1' is filled (since end is the last frame OF the segment)
+                    for f in range(end, stop_frame + 1):
                         self._add_behavior_to_frame(f, behavior)
                         
         elif button == Qt.RightButton:
@@ -1713,6 +1743,45 @@ class VideoAnnotator(QMainWindow):
         self.update_timeline_annotations()
         self.video_player.update_frame_display()
         self.statusBar().showMessage(f"Modified {behavior} segment", 2000)
+
+    def on_modify_last_label(self, action, behavior, start, end):
+        """Handle cut and extend actions from controller on the last created label"""
+        if self.view_only_mode:
+            return
+
+        red_line_frame = self.video_player.current_frame
+        
+        if action == "cut":
+            # Simulate Left Click logic for "Cut": remove from red_line_frame to end
+            if start <= red_line_frame <= end:
+                self.push_undo_state()
+                for f in range(red_line_frame, end + 1):
+                    self._remove_behavior_from_frame(f, behavior)
+                self.update_timeline_annotations()
+                self.video_player.update_frame_display()
+                self.statusBar().showMessage(f"Cut {behavior} label from frame {red_line_frame} to {end}", 2000)
+        
+        elif action == "extend":
+            # Simulate Left Click logic for "Extend"
+            if not (start <= red_line_frame <= end):
+                self.push_undo_state()
+                if red_line_frame < start:
+                    # Extend backwards
+                    # Respect include_last_frame_in_range
+                    start_add = red_line_frame if self.include_last_frame_in_range else red_line_frame + 1
+                    for f in range(start_add, start):
+                        self._add_behavior_to_frame(f, behavior)
+                elif red_line_frame > end:
+                    # Extend forwards
+                    # Respect include_last_frame_in_range
+                    stop_frame = red_line_frame if self.include_last_frame_in_range else red_line_frame - 1
+                    # Start from 'end' to ensure any hole at 'end + 1' is filled
+                    for f in range(end, stop_frame + 1):
+                        self._add_behavior_to_frame(f, behavior)
+                
+                self.update_timeline_annotations()
+                self.video_player.update_frame_display()
+                self.statusBar().showMessage(f"Extended {behavior} label to frame {red_line_frame}", 2000)
 
     def _add_behavior_to_frame(self, frame, behavior):
         """Helper to add a behavior to a specific frame"""
@@ -1834,6 +1903,18 @@ class VideoAnnotator(QMainWindow):
             return
         elif key_sequence == self.shortcuts['undo']:
             self.undo()
+            return
+        elif key_sequence == self.shortcuts['move_label_up']:
+            if self.view_only_mode:
+                QMessageBox.information(self, "Preview Only Mode", "Cannot modify annotations in view-only mode.")
+                return
+            self.video_player.move_last_label(-1)
+            return
+        elif key_sequence == self.shortcuts['move_label_down']:
+            if self.view_only_mode:
+                QMessageBox.information(self, "Preview Only Mode", "Cannot modify annotations in view-only mode.")
+                return
+            self.video_player.move_last_label(1)
             return
         # Check behavior shortcuts 1-10
         for i in range(1, 11):
