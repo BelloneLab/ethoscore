@@ -200,6 +200,9 @@ class VideoPlayer(QLabel):
         self.hold_time = 500
         self.deadzone = 10  # percentage
         self.joystick_sensitivity = 5
+        self.joystick_expo = 50
+        self.joystick_super_rate = 0
+        self.joystick_mode = 'quadratic'
         self.frame_skip = 1
         self.button_a_behavior = "None"
         self.button_b_behavior = "None"
@@ -336,6 +339,8 @@ class VideoPlayer(QLabel):
         self.hold_time = settings.get('hold_time', 500)
         self.deadzone = settings.get('deadzone', 10)
         self.joystick_sensitivity = settings.get('joystick_sensitivity', 5)
+        self.joystick_expo = settings.get('joystick_expo', 50) # Default 50% expo
+        self.joystick_super_rate = settings.get('joystick_super_rate', 0)
         self.frame_skip = settings.get('frame_skip', 1)
         self.fast_forward_multiplier = settings.get('fast_forward_multiplier', 10)
         self.joystick_mode = settings.get('joystick_mode', 'quadratic')
@@ -928,6 +933,18 @@ class VideoPlayer(QLabel):
                 if self.joystick_mode == 'quadratic':
                     # Quadratic scaling: small movements = slow, large movements = fast
                     speed_factor = normalized_axis ** 2
+                elif self.joystick_mode == 'custom':
+                    # Custom expo-based scaling with super rate
+                    # Rescale normalized_axis from [threshold, 1.0] to [0, 1.0] for the formula
+                    x = (normalized_axis - self.gamepad_threshold) / (1.0 - self.gamepad_threshold)
+                    
+                    # Expo component (softens center)
+                    expo = self.joystick_expo / 100.0
+                    y_expo = x * (1 + expo * (x**2 - 1))
+                    
+                    # Super rate component (steepens end)
+                    sr = min(self.joystick_super_rate / 100.0, 0.95) # Cap at 0.95 to avoid division by zero
+                    speed_factor = y_expo / (1.0 - sr * x)
                 else:  # linear mode
                     # Linear scaling: direct proportional response
                     speed_factor = normalized_axis

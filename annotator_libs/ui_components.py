@@ -1,9 +1,106 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
                               QScrollArea, QGridLayout, QInputDialog, QMessageBox, QGroupBox)
 from PySide6.QtCore import Qt, Signal, QSize, QPropertyAnimation, QEasingCurve, QRect, QTimer
-from PySide6.QtGui import QPainter, QPen, QColor, QFont, QPaintEvent, QPixmap, QImage, QTransform
+from PySide6.QtGui import QPainter, QPen, QColor, QFont, QPaintEvent, QPixmap, QImage, QTransform, QPainterPath
 import os
 import sys
+
+class JoystickCurveGraph(QWidget):
+    """Widget to display the joystick response curve"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(150)
+        self.deadzone = 0.1
+        self.sensitivity = 5
+        self.expo = 0.5
+        self.super_rate = 0.0
+        self.mode = 'linear'
+        self.setStyleSheet("background-color: #1a1a1a; border: 1px solid #3d3d3d; border-radius: 4px;")
+
+    def set_params(self, deadzone, sensitivity, expo, super_rate, mode):
+        self.deadzone = deadzone / 100.0
+        self.sensitivity = sensitivity
+        self.expo = expo / 100.0
+        self.super_rate = super_rate / 100.0
+        self.mode = mode
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        width = self.width()
+        height = self.height()
+        
+        # Margin for axes
+        margin = 20
+        graph_width = width - 2 * margin
+        graph_height = height - 2 * margin
+        
+        # Draw grid
+        painter.setPen(QPen(QColor(50, 50, 50), 1, Qt.DashLine))
+        for i in range(1, 4):
+            x = margin + i * graph_width / 4
+            y = margin + i * graph_height / 4
+            painter.drawLine(x, margin, x, margin + graph_height)
+            painter.drawLine(margin, y, margin + graph_width, y)
+            
+        # Draw axes
+        painter.setPen(QPen(QColor(120, 120, 120), 2))
+        painter.drawLine(margin, margin + graph_height, margin + graph_width, margin + graph_height) # X axis
+        painter.drawLine(margin, margin, margin, margin + graph_height) # Y axis
+
+        # Labels
+        font = QFont("Arial", 8)
+        painter.setFont(font)
+        painter.drawText(margin - 15, margin + graph_height + 15, "0")
+        painter.drawText(margin + graph_width - 10, margin + graph_height + 15, "1")
+        painter.drawText(margin - 15, margin + 10, "V")
+        
+        # Draw curve
+        painter.setPen(QPen(QColor(52, 152, 219), 3))
+        
+        path = QPainterPath()
+        path.moveTo(margin, margin + graph_height)
+        
+        # Max speed for normalization on Y axis
+        # We'll normalize based on a reasonable max speed to keep things visible
+        # A super high rate might go off-chart, we'll clip it
+        chart_max_speed = 10.0 # Arbitrary max for visualization
+        
+        for i in range(graph_width + 1):
+            x_norm = i / graph_width
+            
+            if x_norm < self.deadzone:
+                speed_factor = 0
+            else:
+                if self.mode == 'linear':
+                    speed_factor = x_norm
+                elif self.mode == 'quadratic':
+                    speed_factor = x_norm ** 2
+                else: # custom
+                    # Rescale x_norm from [deadzone, 1.0] to [0, 1.0]
+                    x_rescaled = (x_norm - self.deadzone) / (1.0 - self.deadzone)
+                    
+                    # Apply Expo
+                    # Formula: y = x * (1 + expo * (x^2 - 1))
+                    y_expo = x_rescaled * (1 + self.expo * (x_rescaled**2 - 1))
+                    
+                    # Apply Super Rate (steepens the end)
+                    # Use a model similar to Betaflight: factor = 1 / (1 - super_rate * x)
+                    # We cap super_rate to 0.8 to avoid extreme spikes in visualization
+                    sr = min(self.super_rate, 0.9)
+                    speed_factor = y_expo / (1.0 - sr * x_rescaled)
+            
+            speed = speed_factor * (self.sensitivity / 2.0)
+            # Normalize to chart height
+            y_pos = margin + graph_height - (speed / chart_max_speed) * graph_height
+            
+            # Clip to graph area
+            y_pos = max(margin, min(margin + graph_height, y_pos))
+            path.lineTo(margin + i, y_pos)
+            
+        painter.drawPath(path)
 
 def resource_path(relative_path):
     """ Get absolute path to resource, works for dev and for PyInstaller """

@@ -25,16 +25,16 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayo
                               QWidget, QPushButton, QLabel, QFileDialog, QComboBox,
                               QMessageBox, QInputDialog, QDialog,
                               QFormLayout, QKeySequenceEdit, QDialogButtonBox, QSpinBox,
-                              QGroupBox, QTabWidget, QCheckBox, QSplitter, QListWidget, QListWidgetItem, QMenu, QScrollArea) # Added QCheckBox, QSplitter, QListWidget, QListWidgetItem, QMenu, QScrollArea
+                              QGroupBox, QTabWidget, QCheckBox, QSplitter, QListWidget, QListWidgetItem, QMenu, QScrollArea, QStackedWidget) # Added QStackedWidget
 from PySide6.QtCore import Qt, QTimer, QSettings, QCoreApplication, Signal
-from PySide6.QtGui import QKeySequence, QFont, QPainter, QColor, QPen, QBrush
+from PySide6.QtGui import QKeySequence, QFont, QPainter, QColor, QPen, QBrush, QIcon
 from PySide6.QtSvgWidgets import QSvgWidget
 # Suppress pygame messages
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
 import pygame
 from annotator_libs.video_handling import VideoPlayer
 from annotator_libs.ui_components import (BehaviorButtons, TimelineWidget, LoadingScreen, 
-                                        get_friendly_controller_name)
+                                        get_friendly_controller_name, JoystickCurveGraph)
 from annotator_libs.annotation_logic import (
     load_annotations_from_csv,
     save_annotations_to_csv, update_annotations_on_frame_change,
@@ -46,6 +46,608 @@ from annotator_libs.gamification_logic import GamificationManager, LiveScoreWidg
 
 # Suppress Qt warnings
 os.environ['QT_LOGGING_RULES'] = '*.warning=false'
+
+
+class UnifiedSettingsDialog(QDialog):
+    """A unified settings dialog with a sidebar for better organization."""
+
+    def __init__(self, main_window):
+        super().__init__(main_window)
+        self.main_window = main_window
+        self.setWindowTitle("Settings")
+        self.setMinimumSize(750, 550)
+        self.setModal(True)
+        
+        # Apply dark theme style
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #1a1a1a;
+                color: #e0e0e0;
+            }
+            QListWidget {
+                background-color: #252525;
+                border: none;
+                border-right: 1px solid #3d3d3d;
+                outline: none;
+                padding-top: 10px;
+            }
+            QListWidget::item {
+                padding: 12px 15px;
+                border-left: 3px solid transparent;
+                color: #888888;
+                font-weight: bold;
+            }
+            QListWidget::item:selected {
+                background-color: #2a2a2a;
+                color: #3498db;
+                border-left: 3px solid #3498db;
+            }
+            QListWidget::item:hover:!selected {
+                background-color: #2a2a2a;
+                color: #bbbbbb;
+            }
+            QStackedWidget {
+                background-color: #1a1a1a;
+            }
+            QGroupBox {
+                font-weight: bold;
+                border: 1px solid #3d3d3d;
+                border-radius: 8px;
+                margin-top: 20px;
+                padding-top: 20px;
+                color: #3498db;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+            }
+            QLabel {
+                color: #bbbbbb;
+            }
+            QSpinBox, QComboBox, QKeySequenceEdit {
+                background-color: #252525;
+                color: white;
+                border: 1px solid #3d3d3d;
+                border-radius: 4px;
+                padding: 5px;
+            }
+            QCheckBox {
+                color: #bbbbbb;
+            }
+            QPushButton {
+                padding: 8px 15px;
+                border-radius: 5px;
+                font-weight: bold;
+            }
+        """)
+
+        self.setup_ui()
+        self.load_all_settings()
+
+    def setup_ui(self):
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # Content area with sidebar
+        content_layout = QHBoxLayout()
+        content_layout.setSpacing(0)
+
+        # Sidebar
+        self.sidebar = QListWidget()
+        self.sidebar.setFixedWidth(180)
+        self.sidebar.addItem("General")
+        self.sidebar.addItem("Keyboard")
+        self.sidebar.addItem("Controller")
+        self.sidebar.addItem("Gamification")
+        self.sidebar.currentRowChanged.connect(self.display_page)
+        content_layout.addWidget(self.sidebar)
+
+        # Right side: Stacked widget
+        self.stacked_widget = QStackedWidget()
+        
+        # Create pages
+        self.setup_general_page()
+        self.setup_keyboard_page()
+        self.setup_controller_page()
+        self.setup_gamification_page()
+        
+        content_layout.addWidget(self.stacked_widget)
+        main_layout.addLayout(content_layout)
+
+        # Bottom buttons
+        button_container = QWidget()
+        button_container.setStyleSheet("background-color: #1a1a1a; border-top: 1px solid #3d3d3d;")
+        button_layout = QHBoxLayout(button_container)
+        
+        self.buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel | QDialogButtonBox.RestoreDefaults,
+            Qt.Horizontal, self
+        )
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        self.buttons.button(QDialogButtonBox.RestoreDefaults).clicked.connect(self.restore_defaults)
+        
+        # Apply specific button styles
+        self.buttons.button(QDialogButtonBox.Ok).setStyleSheet("background-color: #3498db; color: white;")
+        self.buttons.button(QDialogButtonBox.Cancel).setStyleSheet("background-color: #3d3d3d; color: white;")
+        self.buttons.button(QDialogButtonBox.RestoreDefaults).setStyleSheet("background-color: #3d3d3d; color: white;")
+        
+        button_layout.addWidget(self.buttons)
+        main_layout.addWidget(button_container)
+
+        self.sidebar.setCurrentRow(0)
+
+    def display_page(self, index):
+        self.stacked_widget.setCurrentIndex(index)
+
+    def setup_general_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(30, 20, 30, 20)
+        
+        header = QLabel("General Settings")
+        header.setStyleSheet("font-size: 18px; font-weight: bold; color: white; margin-bottom: 10px;")
+        layout.addWidget(header)
+
+        # UI Group
+        ui_group = QGroupBox("User Interface")
+        ui_form = QFormLayout(ui_group)
+        
+        self.show_frame_preview_bars_checkbox = QCheckBox("Show frame preview bars (color bars above timeline)")
+        ui_form.addRow(self.show_frame_preview_bars_checkbox)
+        
+        self.show_statistics_popup_checkbox = QCheckBox("Show statistics summary when loading next video")
+        ui_form.addRow(self.show_statistics_popup_checkbox)
+        
+        layout.addWidget(ui_group)
+
+        # Labeling Group
+        labeling_group = QGroupBox("Labeling Behavior")
+        labeling_form = QFormLayout(labeling_group)
+        
+        self.hold_time_spin = QSpinBox()
+        self.hold_time_spin.setRange(10, 2000)
+        self.hold_time_spin.setSuffix(" ms")
+        labeling_form.addRow("Hold detection threshold:", self.hold_time_spin)
+        
+        self.label_key_mode_combo = QComboBox()
+        self.label_key_mode_combo.addItem("Hybrid (tap to toggle, hold to activate)", "both")
+        self.label_key_mode_combo.addItem("Toggle only", "toggle")
+        self.label_key_mode_combo.addItem("Hold only", "hold")
+        labeling_form.addRow("Activation mode:", self.label_key_mode_combo)
+        
+        self.multitrack_checkbox = QCheckBox("Enable Multitrack (overlap multiple labels)")
+        labeling_form.addRow(self.multitrack_checkbox)
+        
+        self.include_last_frame_checkbox = QCheckBox("Include the last selected frame in ranges")
+        labeling_form.addRow(self.include_last_frame_checkbox)
+        
+        layout.addWidget(labeling_group)
+
+        # Auto-Save Group
+        save_group = QGroupBox("Auto-Save")
+        save_form = QFormLayout(save_group)
+        
+        self.auto_save_checkbox = QCheckBox("Enable periodic auto-save")
+        save_form.addRow(self.auto_save_checkbox)
+        
+        self.auto_save_interval_spin = QSpinBox()
+        self.auto_save_interval_spin.setRange(1, 60)
+        self.auto_save_interval_spin.setSuffix(" minutes")
+        save_form.addRow("Interval:", self.auto_save_interval_spin)
+        
+        layout.addWidget(save_group)
+        layout.addStretch()
+        self.stacked_widget.addWidget(page)
+
+    def setup_keyboard_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(30, 20, 30, 20)
+        
+        header = QLabel("Keyboard Settings")
+        header.setStyleSheet("font-size: 18px; font-weight: bold; color: white; margin-bottom: 10px;")
+        layout.addWidget(header)
+
+        # Navigation Group
+        nav_group = QGroupBox("Navigation")
+        nav_form = QFormLayout(nav_group)
+        
+        self.frame_step_spin = QSpinBox()
+        self.frame_step_spin.setRange(1, 100)
+        nav_form.addRow("Arrow key step size:", self.frame_step_spin)
+        
+        self.shift_skip_spin = QSpinBox()
+        self.shift_skip_spin.setRange(1, 1000)
+        nav_form.addRow("Shift + Arrow skip size:", self.shift_skip_spin)
+        
+        layout.addWidget(nav_group)
+
+        # Shortcuts Group
+        shortcuts_group = QGroupBox("Shortcuts")
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("background-color: transparent; border: none;")
+        
+        scroll_content = QWidget()
+        shortcuts_form = QFormLayout(scroll_content)
+        
+        self.shortcut_edits = {}
+        shortcut_labels = {
+            'save': 'Save Annotations',
+            'load_video': 'Load Video',
+            'load_next_video': 'Load Next Video',
+            'next_frame': 'Next Frame',
+            'prev_frame': 'Previous Frame',
+            'delete': 'Delete Labels at Frame',
+            'undo': 'Undo Last Action',
+            'move_label_up': 'Move Last Label Up',
+            'move_label_down': 'Move Last Label Down',
+        }
+
+        # Add behavior shortcuts
+        num_behaviors = len(self.main_window.behavior_buttons.behaviors)
+        for i in range(1, num_behaviors + 1):
+            shortcut_labels[f'toggle_behavior_{i}'] = f'Toggle Label {i} ({self.main_window.behavior_buttons.behaviors[i-1]})'
+
+        for key, label in shortcut_labels.items():
+            edit = QKeySequenceEdit()
+            self.shortcut_edits[key] = edit
+            shortcuts_form.addRow(label, edit)
+            
+        scroll.setWidget(scroll_content)
+        layout.addWidget(scroll)
+        self.stacked_widget.addWidget(page)
+
+    def setup_controller_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(30, 20, 30, 20)
+        
+        header = QLabel("Controller Settings")
+        header.setStyleSheet("font-size: 18px; font-weight: bold; color: white; margin-bottom: 10px;")
+        layout.addWidget(header)
+
+        # Controller Config Group
+        config_group = QGroupBox("Joystick Configuration")
+        config_form = QFormLayout(config_group)
+        
+        self.deadzone_spin = QSpinBox()
+        self.deadzone_spin.setRange(0, 50)
+        self.deadzone_spin.setSuffix(" %")
+        config_form.addRow("Deadzone:", self.deadzone_spin)
+        
+        self.joystick_sensitivity_spin = QSpinBox()
+        self.joystick_sensitivity_spin.setRange(1, 10)
+        config_form.addRow("Sensitivity:", self.joystick_sensitivity_spin)
+        
+        self.joystick_mode_combo = QComboBox()
+        self.joystick_mode_combo.addItem("Linear", "linear")
+        self.joystick_mode_combo.addItem("Quadratic", "quadratic")
+        self.joystick_mode_combo.addItem("Custom", "custom")
+        config_form.addRow("Response curve:", self.joystick_mode_combo)
+
+        self.joystick_expo_spin = QSpinBox()
+        self.joystick_expo_spin.setRange(0, 100)
+        self.joystick_expo_spin.setSuffix(" %")
+        self.joystick_expo_label = QLabel("Custom Expo:")
+        config_form.addRow(self.joystick_expo_label, self.joystick_expo_spin)
+
+        self.joystick_super_rate_spin = QSpinBox()
+        self.joystick_super_rate_spin.setRange(0, 95)
+        self.joystick_super_rate_spin.setSuffix(" %")
+        self.joystick_super_rate_label = QLabel("Super Rate:")
+        config_form.addRow(self.joystick_super_rate_label, self.joystick_super_rate_spin)
+
+        # Add curve graph
+        self.curve_graph = JoystickCurveGraph()
+        config_form.addRow("Response Graph:", self.curve_graph)
+
+        # Connect signals to update the graph
+        self.deadzone_spin.valueChanged.connect(self.update_curve_graph)
+        self.joystick_sensitivity_spin.valueChanged.connect(self.update_curve_graph)
+        self.joystick_expo_spin.valueChanged.connect(self.update_curve_graph)
+        self.joystick_super_rate_spin.valueChanged.connect(self.update_curve_graph)
+        self.joystick_mode_combo.currentIndexChanged.connect(self.update_curve_graph)
+        layout.addWidget(config_group)
+
+        # Playback Group
+        playback_group = QGroupBox("Playback Control")
+        playback_form = QFormLayout(playback_group)
+        
+        self.frame_skip_spin = QSpinBox()
+        self.frame_skip_spin.setRange(1, 10)
+        playback_form.addRow("Frame skip rate:", self.frame_skip_spin)
+        
+        self.fast_forward_multiplier_spin = QSpinBox()
+        self.fast_forward_multiplier_spin.setRange(1, 100)
+        playback_form.addRow("Fast forward speed:", self.fast_forward_multiplier_spin)
+        
+        layout.addWidget(playback_group)
+
+        # Mappings Group
+        mappings_group = QGroupBox("Button Mappings")
+        mappings_layout = QVBoxLayout(mappings_group)
+        
+        self.automap_list = QListWidget()
+        self.automap_list.setMaximumHeight(120)
+        self.automap_list.setStyleSheet("background-color: #252525; border: 1px solid #3d3d3d; border-radius: 4px;")
+        mappings_layout.addWidget(self.automap_list)
+        
+        btn_layout = QHBoxLayout()
+        configure_btn = QPushButton("Configure Buttons")
+        configure_btn.setStyleSheet("background-color: #3498db; color: white;")
+        configure_btn.clicked.connect(self.main_window.show_controller_automap_dialog)
+        
+        clear_btn = QPushButton("Clear Mappings")
+        clear_btn.clicked.connect(self.main_window.clear_all_automappings)
+        
+        btn_layout.addWidget(configure_btn)
+        btn_layout.addWidget(clear_btn)
+        mappings_layout.addLayout(btn_layout)
+        
+        layout.addWidget(mappings_group)
+        layout.addStretch()
+        self.stacked_widget.addWidget(page)
+
+    def update_curve_graph(self):
+        """Update the joystick curve visualization"""
+        mode = self.joystick_mode_combo.currentData()
+        self.curve_graph.set_params(
+            self.deadzone_spin.value(),
+            self.joystick_sensitivity_spin.value(),
+            self.joystick_expo_spin.value(),
+            self.joystick_super_rate_spin.value(),
+            mode
+        )
+        # Only show expo and super rate spins when custom mode is selected
+        is_custom = (mode == "custom")
+        self.joystick_expo_spin.setVisible(is_custom)
+        self.joystick_expo_label.setVisible(is_custom)
+        self.joystick_super_rate_spin.setVisible(is_custom)
+        self.joystick_super_rate_label.setVisible(is_custom)
+
+    def setup_gamification_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(30, 20, 30, 20)
+        
+        header = QLabel("Gamification Settings")
+        header.setStyleSheet("font-size: 18px; font-weight: bold; color: white; margin-bottom: 10px;")
+        layout.addWidget(header)
+
+        # Enable/Disable
+        self.enable_gamification_checkbox = QCheckBox("Enable Gamification (Score & Combos)")
+        self.enable_gamification_checkbox.setStyleSheet("font-size: 14px; font-weight: bold; color: #3498db; margin-bottom: 10px;")
+        layout.addWidget(self.enable_gamification_checkbox)
+
+        # Points Group
+        points_group = QGroupBox("Scoring")
+        points_form = QFormLayout(points_group)
+        
+        self.points_per_label_spin = QSpinBox()
+        self.points_per_label_spin.setRange(1, 1000)
+        points_form.addRow("Points per labeled frame:", self.points_per_label_spin)
+        
+        layout.addWidget(points_group)
+
+        # Combo Group
+        combo_group = QGroupBox("Combos")
+        combo_form = QFormLayout(combo_group)
+        
+        self.combo_threshold_spin = QSpinBox()
+        self.combo_threshold_spin.setRange(2, 20)
+        combo_form.addRow("Combo start threshold:", self.combo_threshold_spin)
+        
+        self.combo_increment_value_spin = QSpinBox()
+        self.combo_increment_value_spin.setRange(1, 10)
+        combo_form.addRow("Multiplier increment:", self.combo_increment_value_spin)
+        
+        self.combo_timeout_spin = QSpinBox()
+        self.combo_timeout_spin.setRange(100, 5000)
+        self.combo_timeout_spin.setSuffix(" ms")
+        combo_form.addRow("Combo timeout:", self.combo_timeout_spin)
+        
+        self.combo_across_behaviors_checkbox = QCheckBox("Allow combos across different behaviors")
+        combo_form.addRow(self.combo_across_behaviors_checkbox)
+        
+        layout.addWidget(combo_group)
+
+        # Stats
+        stats_group = QGroupBox("Progress")
+        stats_layout = QHBoxLayout(stats_group)
+        
+        reset_high_score_button = QPushButton("Reset Personal High Score")
+        reset_high_score_button.clicked.connect(self._reset_high_score)
+        stats_layout.addWidget(reset_high_score_button)
+        
+        layout.addWidget(stats_group)
+        layout.addStretch()
+        self.stacked_widget.addWidget(page)
+
+    def load_all_settings(self):
+        # General Settings
+        mw = self.main_window
+        self.hold_time_spin.setValue(mw.hold_time)
+        self.auto_save_checkbox.setChecked(mw.auto_save_enabled)
+        self.auto_save_interval_spin.setValue(mw.auto_save_interval)
+        
+        mode_index = self.label_key_mode_combo.findData(mw.label_key_mode)
+        if mode_index >= 0: self.label_key_mode_combo.setCurrentIndex(mode_index)
+        
+        self.show_frame_preview_bars_checkbox.setChecked(mw.show_frame_preview_bars)
+        self.include_last_frame_checkbox.setChecked(mw.include_last_frame_in_range)
+        self.show_statistics_popup_checkbox.setChecked(mw.show_statistics_popup)
+        self.multitrack_checkbox.setChecked(mw.multitrack_enabled)
+
+        # Input Settings (Keyboard)
+        s_input = mw.input_settings
+        self.frame_step_spin.setValue(s_input.value('frame_step', 1, int))
+        self.shift_skip_spin.setValue(s_input.value('shift_skip', 10, int))
+        
+        # Shortcuts
+        for key, edit in self.shortcut_edits.items():
+            edit.setKeySequence(QKeySequence(mw.shortcuts.get(key, "")))
+
+        # Controller Settings
+        self.deadzone_spin.setValue(s_input.value('deadzone', 10, int))
+        self.joystick_sensitivity_spin.setValue(s_input.value('joystick_sensitivity', 5, int))
+        self.joystick_expo_spin.setValue(s_input.value('joystick_expo', 50, int))
+        self.joystick_super_rate_spin.setValue(s_input.value('joystick_super_rate', 0, int))
+        self.frame_skip_spin.setValue(s_input.value('frame_skip', 1, int))
+        self.fast_forward_multiplier_spin.setValue(s_input.value('fast_forward_multiplier', 10, int))
+        
+        mode_index = self.joystick_mode_combo.findData(s_input.value('joystick_mode', 'quadratic', str))
+        if mode_index >= 0: self.joystick_mode_combo.setCurrentIndex(mode_index)
+        
+        self.update_curve_graph()
+        self.update_automap_display()
+
+        # Gamification Settings
+        gm = mw.gamification_manager
+        self.enable_gamification_checkbox.setChecked(gm.gamification_enabled)
+        self.points_per_label_spin.setValue(gm.points_per_label)
+        self.combo_threshold_spin.setValue(gm.combo_threshold)
+        self.combo_increment_value_spin.setValue(gm.combo_increment_value)
+        self.combo_timeout_spin.setValue(gm.combo_timeout_ms)
+        self.combo_across_behaviors_checkbox.setChecked(gm.combo_across_behaviors)
+
+    def save_all_settings(self):
+        mw = self.main_window
+        
+        # General Settings
+        mw.hold_time = self.hold_time_spin.value()
+        mw.auto_save_enabled = self.auto_save_checkbox.isChecked()
+        mw.auto_save_interval = self.auto_save_interval_spin.value()
+        mw.label_key_mode = self.label_key_mode_combo.currentData()
+        mw.show_frame_preview_bars = self.show_frame_preview_bars_checkbox.isChecked()
+        mw.include_last_frame_in_range = self.include_last_frame_checkbox.isChecked()
+        mw.show_statistics_popup = self.show_statistics_popup_checkbox.isChecked()
+        mw.multitrack_enabled = self.multitrack_checkbox.isChecked()
+        mw.save_settings()
+
+        # Keyboard/Input Settings
+        s_input = mw.input_settings
+        s_input.setValue('frame_step', self.frame_step_spin.value())
+        s_input.setValue('shift_skip', self.shift_skip_spin.value())
+        
+        # Shortcuts
+        for key, edit in self.shortcut_edits.items():
+            mw.shortcuts[key] = edit.keySequence().toString()
+        mw.save_shortcuts()
+        mw.update_menu_shortcuts()
+
+        # Controller Settings
+        s_input.setValue('deadzone', self.deadzone_spin.value())
+        s_input.setValue('joystick_sensitivity', self.joystick_sensitivity_spin.value())
+        s_input.setValue('joystick_expo', self.joystick_expo_spin.value())
+        s_input.setValue('joystick_super_rate', self.joystick_super_rate_spin.value())
+        s_input.setValue('frame_skip', self.frame_skip_spin.value())
+        s_input.setValue('fast_forward_multiplier', self.fast_forward_multiplier_spin.value())
+        s_input.setValue('joystick_mode', self.joystick_mode_combo.currentData())
+        s_input.sync()
+
+        # Update VideoPlayer
+        mw.video_player.update_input_settings({
+            'frame_step': self.frame_step_spin.value(),
+            'shift_skip': self.shift_skip_spin.value(),
+            'deadzone': self.deadzone_spin.value(),
+            'joystick_sensitivity': self.joystick_sensitivity_spin.value(),
+            'joystick_expo': self.joystick_expo_spin.value(),
+            'joystick_super_rate': self.joystick_super_rate_spin.value(),
+            'frame_skip': self.frame_skip_spin.value(),
+            'fast_forward_multiplier': self.fast_forward_multiplier_spin.value(),
+            'joystick_mode': self.joystick_mode_combo.currentData(),
+            'controller_automappings': mw.video_player.controller_mappings
+        })
+        mw.video_player.multitrack_enabled = mw.multitrack_enabled
+        mw.video_player.update_label_key_mode(mw.label_key_mode)
+        mw.video_player.set_show_overlay_bars(mw.show_frame_preview_bars)
+        mw.video_player.set_include_last_frame_in_range(mw.include_last_frame_in_range)
+        
+        # Restart auto-save timer
+        mw.auto_save_timer.stop()
+        if mw.auto_save_enabled:
+            mw.auto_save_timer.start(mw.auto_save_interval * 60 * 1000)
+
+        # Gamification Settings
+        gm = mw.gamification_manager
+        if gm.gamification_enabled != self.enable_gamification_checkbox.isChecked():
+            gm.gamification_enabled = self.enable_gamification_checkbox.isChecked()
+            gm.gamification_enabled_changed.emit(gm.gamification_enabled)
+        
+        gm.points_per_label = self.points_per_label_spin.value()
+        gm.combo_threshold = self.combo_threshold_spin.value()
+        gm.combo_increment_value = self.combo_increment_value_spin.value()
+        gm.combo_timeout_ms = self.combo_timeout_spin.value()
+        gm.combo_across_behaviors = self.combo_across_behaviors_checkbox.isChecked()
+        gm.save_settings(mw.gamification_settings)
+
+    def update_automap_display(self):
+        self.automap_list.clear()
+        mappings = self.main_window.video_player.controller_mappings
+        if mappings:
+            for button_name, behavior in mappings.items():
+                friendly_name = get_friendly_controller_name(button_name)
+                self.automap_list.addItem(f"{friendly_name} → {behavior}")
+        else:
+            self.automap_list.addItem("No mappings configured")
+
+    def _reset_high_score(self):
+        if QMessageBox.question(self, "Reset High Score", "Are you sure you want to reset your high score? This cannot be undone.") == QMessageBox.Yes:
+            self.main_window.gamification_manager.reset_high_score()
+
+    def restore_defaults(self):
+        # General defaults
+        self.hold_time_spin.setValue(100)
+        self.auto_save_checkbox.setChecked(False)
+        self.auto_save_interval_spin.setValue(3)
+        self.label_key_mode_combo.setCurrentIndex(0) # Hybrid
+        self.show_frame_preview_bars_checkbox.setChecked(True)
+        self.include_last_frame_checkbox.setChecked(True)
+        self.show_statistics_popup_checkbox.setChecked(True)
+        self.multitrack_checkbox.setChecked(True)
+
+        # Keyboard defaults
+        self.frame_step_spin.setValue(1)
+        self.shift_skip_spin.setValue(10)
+        
+        # Default shortcuts
+        default_shortcuts = {
+            'save': 'Ctrl+S', 'load_video': 'Ctrl+O', 'load_next_video': 'Ctrl+N',
+            'next_frame': 'Right', 'prev_frame': 'Left', 'delete': 'Escape', 'undo': 'Ctrl+Z',
+            'move_label_up': 'Up', 'move_label_down': 'Down'
+        }
+        for i in range(1, 11):
+            default_shortcuts[f'toggle_behavior_{i}'] = str(i) if i <= 9 else '0'
+            
+        for key, shortcut in default_shortcuts.items():
+            if key in self.shortcut_edits:
+                self.shortcut_edits[key].setKeySequence(QKeySequence(shortcut))
+
+        # Controller defaults
+        self.deadzone_spin.setValue(10)
+        self.joystick_sensitivity_spin.setValue(5)
+        self.joystick_expo_spin.setValue(50)
+        self.joystick_super_rate_spin.setValue(0)
+        self.frame_skip_spin.setValue(1)
+        self.fast_forward_multiplier_spin.setValue(10)
+        self.joystick_mode_combo.setCurrentIndex(1) # Quadratic
+        self.update_curve_graph()
+
+        # Gamification defaults
+        self.enable_gamification_checkbox.setChecked(True)
+        self.points_per_label_spin.setValue(1)
+        self.combo_threshold_spin.setValue(3)
+        self.combo_increment_value_spin.setValue(1)
+        self.combo_timeout_spin.setValue(1000)
+        self.combo_across_behaviors_checkbox.setChecked(True)
+
+    def accept(self):
+        self.save_all_settings()
+        super().accept()
 
 
 class WelcomeDialog(QDialog):
@@ -654,15 +1256,19 @@ class VideoAnnotator(QMainWindow):
 
         # Settings menu
         settings_menu = menubar.addMenu('Settings')
-        general_settings_action = settings_menu.addAction('General Settings')
-        general_settings_action.triggered.connect(self.show_general_settings_dialog)
-        input_settings_action = settings_menu.addAction('Input Settings')
-        input_settings_action.triggered.connect(self.show_input_settings_dialog)
-        gamification_settings_action = settings_menu.addAction('Gamification Settings')
-        gamification_settings_action.triggered.connect(self.show_gamification_settings_dialog)
+        
+        settings_action = settings_menu.addAction('Settings')
+        settings_action.triggered.connect(self.show_settings_dialog)
+        
         settings_menu.addSeparator()
+        
         rescan_controllers_action = settings_menu.addAction('Rescan Controllers')
         rescan_controllers_action.triggered.connect(self.rescan_controllers)
+
+    def show_settings_dialog(self):
+        """Show the unified settings configuration dialog"""
+        dialog = UnifiedSettingsDialog(self)
+        dialog.exec()
 
 
     def load_settings(self):
@@ -775,289 +1381,36 @@ class VideoAnnotator(QMainWindow):
                 elif action.text() == 'Load Next Video': # Update shortcut for new action
                     action.setShortcut(QKeySequence(self.shortcuts['load_next_video']))
 
-
-
-    def show_input_settings_dialog(self):
-        """Show the input settings configuration dialog with tabs"""
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Input Settings")
-        dialog.setModal(True)
-
-        layout = QVBoxLayout(dialog)
-
-        # Create tab widget
-        tab_widget = QTabWidget()
-
-        # Keyboard settings tab
-        keyboard_tab = QWidget()
-        keyboard_layout = QVBoxLayout(keyboard_tab)
-
-        keyboard_group = QGroupBox("Keyboard Arrow Key Settings")
-        keyboard_form = QFormLayout(keyboard_group)
-
-        # Frame step size
-        self.frame_step_spin = QSpinBox()
-        self.frame_step_spin.setRange(1, 100)
-        self.frame_step_spin.setValue(1)
-        keyboard_form.addRow("Frame step size:", self.frame_step_spin)
-
-        # Shift frame skip
-        self.shift_skip_spin = QSpinBox()
-        self.shift_skip_spin.setRange(1, 1000)
-        self.shift_skip_spin.setValue(10)
-        keyboard_form.addRow("Shift frame skip:", self.shift_skip_spin)
-
-
-        keyboard_layout.addWidget(keyboard_group)
-
-        # Keyboard shortcuts group
-        shortcuts_group = QGroupBox("Keyboard Shortcuts")
-        shortcuts_form = QFormLayout(shortcuts_group)
-
-        self.shortcut_edits = {}
-        shortcut_labels = {
-            'save': 'Save Annotations',
-            'load_video': 'Load Video',
-            'load_next_video': 'Load Next Video',
-            'next_frame': 'Next Frame',
-            'prev_frame': 'Previous Frame',
-            'delete': 'Delete Labels',
-            'undo': 'Undo Last Label',
-            'move_label_up': 'Move Last Label Up (Change Type)',
-            'move_label_down': 'Move Last Label Down (Change Type)',
-        }
-
-        # Add behavior shortcuts up to the number of behaviors
-        num_behaviors = len(self.behavior_buttons.behaviors)
-        for i in range(1, num_behaviors + 1):
-            shortcut_labels[f'toggle_behavior_{i}'] = f'Toggle Behavior {i}'
-
-        for key, label in shortcut_labels.items():
-            edit = QKeySequenceEdit(QKeySequence(self.shortcuts[key]))
-            self.shortcut_edits[key] = edit
-            shortcuts_form.addRow(label, edit)
-
-        keyboard_layout.addWidget(shortcuts_group)
-        keyboard_layout.addStretch()
-
-        # Controller settings tab
-        controller_tab = QWidget()
-        controller_layout = QVBoxLayout(controller_tab)
-
-        controller_group = QGroupBox("Gamepad/Controller Settings")
-        controller_form = QFormLayout(controller_group)
-
-        # Joystick deadzone
-        self.deadzone_spin = QSpinBox()
-        self.deadzone_spin.setRange(0, 50)
-        self.deadzone_spin.setValue(10)
-        self.deadzone_spin.setSuffix(" %")
-        controller_form.addRow("Joystick deadzone:", self.deadzone_spin)
-
-        # Joystick sensitivity
-        self.joystick_sensitivity_spin = QSpinBox()
-        self.joystick_sensitivity_spin.setRange(1, 10)
-        self.joystick_sensitivity_spin.setValue(5)
-        controller_form.addRow("Joystick sensitivity:", self.joystick_sensitivity_spin)
-
-        # Joystick mode
-        self.joystick_mode_combo = QComboBox()
-        self.joystick_mode_combo.addItem("Linear", "linear")
-        self.joystick_mode_combo.addItem("Quadratic", "quadratic")
-        controller_form.addRow("Joystick mode:", self.joystick_mode_combo)
-
-        # Frame skip rate
-        self.frame_skip_spin = QSpinBox()
-        self.frame_skip_spin.setRange(1, 10)
-        self.frame_skip_spin.setValue(1)
-        controller_form.addRow("Frame skip rate:", self.frame_skip_spin)
-
-        # Fast forward multiplier
-        self.fast_forward_multiplier_spin = QSpinBox()
-        self.fast_forward_multiplier_spin.setRange(1, 100)
-        self.fast_forward_multiplier_spin.setValue(10)
-        controller_form.addRow("Fast forward multiplier:", self.fast_forward_multiplier_spin)
-
-        # Automapped behaviors
-        automap_group = QGroupBox("Controller Button Mappings")
-        automap_layout = QVBoxLayout(automap_group)
-
-        # Info label
-        automap_info = QLabel("Configure which controller buttons map to behaviors and navigation actions:")
-        automap_layout.addWidget(automap_info)
-
-        # List widget to display current mappings
-        self.automap_list = QListWidget()
-        self.automap_list.setMaximumHeight(150)
-        automap_layout.addWidget(self.automap_list)
-
-        # Buttons for automapping
-        automap_buttons_layout = QHBoxLayout()
-        automap_btn = QPushButton("Configure Mappings")
-        automap_btn.clicked.connect(self.show_controller_automap_dialog)
-        automap_buttons_layout.addWidget(automap_btn)
-
-        clear_automap_btn = QPushButton("Clear All")
-        clear_automap_btn.clicked.connect(self.clear_all_automappings)
-        automap_buttons_layout.addWidget(clear_automap_btn)
-
-        automap_layout.addLayout(automap_buttons_layout)
-
-        controller_layout.addWidget(controller_group)
-        controller_layout.addWidget(automap_group)
-        controller_layout.addStretch()
-
-        # Add tabs
-        tab_widget.addTab(keyboard_tab, "Keyboard")
-        tab_widget.addTab(controller_tab, "Controller")
-
-        layout.addWidget(tab_widget)
-
-        # Load current settings into the dialog widgets
-        self.load_input_settings_into_dialog()
-
-        # Buttons
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.Ok | QDialogButtonBox.Cancel | QDialogButtonBox.RestoreDefaults,
-            Qt.Horizontal, dialog
-        )
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        buttons.button(QDialogButtonBox.RestoreDefaults).clicked.connect(self.restore_default_input_settings)
-        layout.addWidget(buttons)
-
-        if dialog.exec() == QDialog.Accepted:
-            # Save shortcuts
-            if hasattr(self, 'shortcut_edits'):
-                for key, edit in self.shortcut_edits.items():
-                    self.shortcuts[key] = edit.keySequence().toString()
-                self.save_shortcuts()
-                self.update_menu_shortcuts()
-            self.save_input_settings()
-
     def show_controller_automap_dialog(self):
         """Show the controller automapping dialog"""
         dialog = ControllerAutomapDialog(self.behavior_buttons.behaviors + ["fast_forward", "erase", "undo", "move_label_up", "move_label_down", "cut_label", "extend_label"], self.video_player.controller_mappings, self)
         if dialog.exec() == QDialog.Accepted:
             self.video_player.controller_mappings = dialog.get_mappings()
-            # Removed immediate save_controller_mappings() call here.
-            # Mappings will be saved when the main Input Settings dialog is accepted.
             # Update video player with new mappings
-            self.video_player.update_input_settings(self.get_current_input_settings())
-            # Update the display in input settings if it's open
-            if hasattr(self, 'automap_list'):
-                self.update_automap_display()
+            self.video_player.update_input_settings(self.get_current_input_settings_for_startup())
             # Update behavior button labels with controller mappings
             self.behavior_buttons.update_button_mappings(self.video_player.controller_mappings)
+            # If the unified settings dialog is open, update its display
+            for child in self.findChildren(UnifiedSettingsDialog):
+                child.update_automap_display()
 
+    def clear_all_automappings(self):
+        """Clear all controller automappings"""
+        if QMessageBox.question(self, "Clear All", "Are you sure you want to clear all controller mappings?") == QMessageBox.Yes:
+            self.video_player.controller_mappings = {}
+            self.save_controller_mappings()
+            # Update behavior button labels
+            self.behavior_buttons.update_button_mappings(self.video_player.controller_mappings)
+            # If the unified settings dialog is open, update its display
+            for child in self.findChildren(UnifiedSettingsDialog):
+                child.update_automap_display()
 
-    def show_general_settings_dialog(self):
-        """Show the general settings configuration dialog"""
-        dialog = QDialog(self)
-        dialog.setWindowTitle("General Settings")
-        dialog.setModal(True)
-
-        layout = QVBoxLayout(dialog)
-        form_layout = QFormLayout()
-
-        # Hold detection time
-        self.hold_time_spin = QSpinBox()
-        self.hold_time_spin.setRange(10, 2000) # Adjusted range
-        self.hold_time_spin.setValue(self.hold_time) # Use loaded value
-        self.hold_time_spin.setSuffix(" ms")
-        form_layout.addRow("Hold detection time:", self.hold_time_spin)
-
-        # Auto-save enabled checkbox
-        self.auto_save_checkbox = QCheckBox("Enable Auto-Save")
-        self.auto_save_checkbox.setChecked(self.auto_save_enabled)
-        form_layout.addRow("Auto-Save:", self.auto_save_checkbox)
-
-        # Auto-save interval spin box
-        self.auto_save_interval_spin = QSpinBox()
-        self.auto_save_interval_spin.setRange(1, 60) # 1 to 60 minutes
-        self.auto_save_interval_spin.setSuffix(" minutes")
-        self.auto_save_interval_spin.setValue(self.auto_save_interval)
-        form_layout.addRow("Auto-Save Interval:", self.auto_save_interval_spin)
-
-        # Label key mode combo box
-        self.label_key_mode_combo = QComboBox()
-        self.label_key_mode_combo.addItem("Both (tap to toggle, hold to activate)", "both")
-        self.label_key_mode_combo.addItem("Toggle only", "toggle")
-        self.label_key_mode_combo.addItem("Hold only", "hold")
-        # Set current selection based on saved mode
-        mode_index = self.label_key_mode_combo.findData(self.label_key_mode)
-        if mode_index >= 0:
-            self.label_key_mode_combo.setCurrentIndex(mode_index)
-        form_layout.addRow("Label Keys:", self.label_key_mode_combo)
-
-        # Show frame preview bars checkbox
-        self.show_frame_preview_bars_checkbox = QCheckBox("Show frame preview bars")
-        self.show_frame_preview_bars_checkbox.setChecked(self.show_frame_preview_bars)
-        form_layout.addRow("UI:", self.show_frame_preview_bars_checkbox)
-
-        # Include last frame in range checkbox
-        self.include_last_frame_checkbox = QCheckBox("Include last selected frame in range")
-        self.include_last_frame_checkbox.setChecked(self.include_last_frame_in_range)
-        form_layout.addRow("Labeling:", self.include_last_frame_checkbox)
-
-        # Show statistics popup checkbox
-        self.show_statistics_popup_checkbox = QCheckBox("Show statistics popup when loading next video")
-        self.show_statistics_popup_checkbox.setChecked(self.show_statistics_popup)
-        form_layout.addRow("UI:", self.show_statistics_popup_checkbox)
-
-        # Multitrack checkbox
-        self.multitrack_checkbox = QCheckBox("Enable Multitrack")
-        self.multitrack_checkbox.setChecked(self.multitrack_enabled)
-        form_layout.addRow("Labeling:", self.multitrack_checkbox)
-
-        layout.addLayout(form_layout)
-
-        # Buttons
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.Ok | QDialogButtonBox.Cancel | QDialogButtonBox.RestoreDefaults,
-            Qt.Horizontal, dialog
-        )
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        buttons.button(QDialogButtonBox.RestoreDefaults).clicked.connect(self.restore_default_general_settings)
-        layout.addWidget(buttons)
-
-        if dialog.exec() == QDialog.Accepted:
-            self.hold_time = self.hold_time_spin.value()
-            self.auto_save_enabled = self.auto_save_checkbox.isChecked()
-            self.auto_save_interval = self.auto_save_interval_spin.value()
-            self.label_key_mode = self.label_key_mode_combo.currentData()
-            self.show_frame_preview_bars = self.show_frame_preview_bars_checkbox.isChecked()
-            self.include_last_frame_in_range = self.include_last_frame_checkbox.isChecked()
-            self.show_statistics_popup = self.show_statistics_popup_checkbox.isChecked()
-            self.multitrack_enabled = self.multitrack_checkbox.isChecked()
-            self.save_settings() # Save general settings
-
-            # Restart auto-save timer with new settings
-            self.auto_save_timer.stop()
-            if self.auto_save_enabled:
-                self.auto_save_timer.start(self.auto_save_interval * 60 * 1000)
-
-            # Update VideoPlayer with new multitrack setting
-            self.video_player.multitrack_enabled = self.multitrack_enabled
-
-            # Update VideoPlayer with new label key mode setting
-            self.video_player.update_label_key_mode(self.label_key_mode)
-
-            # Update VideoPlayer with new frame preview bars setting
-            self.video_player.set_show_overlay_bars(self.show_frame_preview_bars)
-
-            # Update VideoPlayer with new include last frame setting
-            self.video_player.set_include_last_frame_in_range(self.include_last_frame_in_range)
-
-            # Update VideoPlayer with the new hold time
-            self.video_player.update_input_settings({'hold_time': self.hold_time})
-
-    def show_gamification_settings_dialog(self):
-        """Show the gamification settings configuration dialog."""
-        dialog = GamificationSettingsDialog(self.gamification_manager, self)
-        if dialog.exec() == QDialog.Accepted:
-            self.gamification_manager.save_settings(self.gamification_settings)
+    def save_controller_mappings(self):
+        """Save controller automappings to QSettings"""
+        settings = self.input_settings
+        json_mappings = json.dumps(self.video_player.controller_mappings)
+        settings.setValue('controller_automappings', json_mappings)
+        settings.sync()
 
     def rescan_controllers(self):
         """Rescan for game controllers"""
@@ -1076,18 +1429,6 @@ class VideoAnnotator(QMainWindow):
         except Exception as e:
             self.statusBar().showMessage(f"Error rescanning controllers: {str(e)}", 3000)
 
-    def restore_default_general_settings(self):
-        """Restore default general settings"""
-        self.hold_time_spin.setValue(100) # Default 100 ms
-        self.auto_save_checkbox.setChecked(False)
-        self.auto_save_interval_spin.setValue(3) # Default 3 minutes
-        # Set combo box to "both" mode
-        both_index = self.label_key_mode_combo.findData('both')
-        if both_index >= 0:
-            self.label_key_mode_combo.setCurrentIndex(both_index)
-        self.show_statistics_popup_checkbox.setChecked(True) # Default enabled
-        self.multitrack_checkbox.setChecked(True) # Default enabled
-
     def load_input_settings_on_startup(self):
         """Load input settings from QSettings at application startup."""
         settings = self.input_settings
@@ -1102,6 +1443,8 @@ class VideoAnnotator(QMainWindow):
         self._frame_skip = settings.value('frame_skip', 1, int)
         self._fast_forward_multiplier = settings.value('fast_forward_multiplier', 10, int)
         self._joystick_mode = settings.value('joystick_mode', 'quadratic', str)
+        self._joystick_expo = settings.value('joystick_expo', 50, int)
+        self._joystick_super_rate = settings.value('joystick_super_rate', 0, int)
 
         # Load controller automappings
         automap_json = settings.value('controller_automappings', '{}', str)
@@ -1118,6 +1461,8 @@ class VideoAnnotator(QMainWindow):
             'hold_time': self.hold_time, # Add hold_time here
             'deadzone': getattr(self, '_deadzone', 10),
             'joystick_sensitivity': getattr(self, '_joystick_sensitivity', 5),
+            'joystick_expo': getattr(self, '_joystick_expo', 50),
+            'joystick_super_rate': getattr(self, '_joystick_super_rate', 0),
             'frame_skip': getattr(self, '_frame_skip', 1),
             'fast_forward_multiplier': getattr(self, '_fast_forward_multiplier', 10),
             'joystick_mode': getattr(self, '_joystick_mode', 'quadratic'),
@@ -1139,6 +1484,8 @@ class VideoAnnotator(QMainWindow):
         # Controller settings
         self.deadzone_spin.setValue(settings.value('deadzone', 10, int))
         self.joystick_sensitivity_spin.setValue(settings.value('joystick_sensitivity', 5, int))
+        self.joystick_expo_spin.setValue(settings.value('joystick_expo', 50, int))
+        self.joystick_super_rate_spin.setValue(settings.value('joystick_super_rate', 0, int))
         self.frame_skip_spin.setValue(settings.value('frame_skip', 1, int))
         self.fast_forward_multiplier_spin.setValue(settings.value('fast_forward_multiplier', 10, int))
         mode_index = self.joystick_mode_combo.findData(settings.value('joystick_mode', 'quadratic', str))
@@ -1164,6 +1511,8 @@ class VideoAnnotator(QMainWindow):
         # Controller settings
         settings.setValue('deadzone', self.deadzone_spin.value())
         settings.setValue('joystick_sensitivity', self.joystick_sensitivity_spin.value())
+        settings.setValue('joystick_expo', self.joystick_expo_spin.value())
+        settings.setValue('joystick_super_rate', self.joystick_super_rate_spin.value())
         settings.setValue('frame_skip', self.frame_skip_spin.value())
         settings.setValue('fast_forward_multiplier', self.fast_forward_multiplier_spin.value())
         settings.setValue('joystick_mode', self.joystick_mode_combo.currentData())
@@ -1176,6 +1525,8 @@ class VideoAnnotator(QMainWindow):
             'shift_skip': self.shift_skip_spin.value(),
             'deadzone': self.deadzone_spin.value(),
             'joystick_sensitivity': self.joystick_sensitivity_spin.value(),
+            'joystick_expo': self.joystick_expo_spin.value(),
+            'joystick_super_rate': self.joystick_super_rate_spin.value(),
             'frame_skip': self.frame_skip_spin.value(),
             'fast_forward_multiplier': self.fast_forward_multiplier_spin.value(),
             'joystick_mode': self.joystick_mode_combo.currentData(),
