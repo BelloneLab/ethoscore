@@ -39,8 +39,14 @@ def load_annotations_from_csv(video_path, behaviors, parent=None):
                 return annotations
 
             # Get frame numbers and behavior data as NumPy arrays
-            frames = (df['Frames'].values - 1).astype(int)
+            frames_raw = df['Frames'].values
+            if frames_raw.size == 0:
+                return annotations
+            frames = (frames_raw - 1).astype(int)
             data = df[valid_cols].values
+
+            if data.size == 0:
+                return annotations
 
             # Find where labels are present (1s)
             rows, cols = np.where(data == 1)
@@ -121,10 +127,6 @@ def sync_video_csv_with_template(df, template_behaviors, csv_path, parent=None):
         # Optimized row deletion using NumPy
         mask = (df[list(missing_in_template)] == 1).any(axis=1)
         synced_df = synced_df[~mask.values].reset_index(drop=True)
-
-    # Save the synced CSV
-    csv_path = df.attrs.get('filename', 'synced.csv') if hasattr(df, 'attrs') else 'synced.csv'
-    # Actually, the original path is not needed, just returning the df and let the caller save it manually
 
     return synced_df
 

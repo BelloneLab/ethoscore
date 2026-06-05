@@ -250,6 +250,9 @@ class VideoPlayer(QLabel):
         self.video_capture_lock = threading.Lock()
         self.last_read_frame = -1
 
+        # Annotations dict - initialized empty, set externally by the main application
+        self.annotations = {}
+
         self.setup_ui()
 
     def stop_scrubbing(self):
@@ -671,6 +674,7 @@ class VideoPlayer(QLabel):
 
         # Update progress bar (1-based for UI and CSV)
         self.progress_bar.setValue(self.current_frame + 1)
+        QCoreApplication.processEvents()  # Keep progress bar responsive during heavy loads
 
         # Update current_behavior for the new frame BEFORE updating display
         active_behaviors_list = update_annotations_on_frame_change(

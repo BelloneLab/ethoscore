@@ -1683,10 +1683,17 @@ class VideoAnnotator(QMainWindow):
         if not os.path.exists(csv_path):
             return {}  # Return empty annotations
 
+        QCoreApplication.processEvents()  # Keep UI responsive during CSV loading
+
         try:
             df = pd.read_csv(csv_path)
             csv_behaviors = df.columns.tolist()[1:]  # Skip 'Frames' column
             saved_behaviors = self.saved_behaviors if self.saved_behaviors else get_default_behaviors()
+
+            # Edge case: CSV has no behavior columns
+            if not csv_behaviors:
+                QMessageBox.information(self, "CSV Empty", "The CSV file has no behavior columns.")
+                return {}
 
             # Check if CSV headers match saved behaviors exactly
             if set(csv_behaviors) == set(saved_behaviors):
@@ -1865,17 +1872,6 @@ class VideoAnnotator(QMainWindow):
             self.last_video_path = file_path
             self.save_settings()
 
-    def load_video_dialog(self):
-        """Open dialog to load video file"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select Video File", "",
-            "Video Files (*.mp4 *.avi *.mov *.mkv *.wmv)"
-        )
-
-        if file_path:
-            self.load_video_by_path(file_path)
-            self.loading_screen.show() # Show loading screen when video starts loading
-            
     def load_next_video_in_main_ui(self):
         """Load the next alphabetical video in the same folder as the currently opened video."""
         if not self.video_path or not os.path.exists(self.video_path):
@@ -1894,7 +1890,7 @@ class VideoAnnotator(QMainWindow):
             if f.lower().endswith(('.mp4', '.avi', '.mov', '.mkv', '.wmv')):
                 video_files.append(os.path.join(current_dir, f))
 
-        video_files.sort() # Sort alphabetically
+        video_files.sort()
 
         if not video_files:
             QMessageBox.warning(self, "Error", "No video files found in the current directory.")
@@ -1904,20 +1900,29 @@ class VideoAnnotator(QMainWindow):
             current_video_index = video_files.index(self.video_path)
             next_video_index = (current_video_index + 1) % len(video_files)
             next_video_path = video_files[next_video_index]
-            self.save_annotations() # Save current video annotations before loading the next
+            self.save_annotations()
             self.load_video_by_path(next_video_path)
-            self.loading_screen.show() # Show loading screen when video starts loading
+            self.loading_screen.show()
             self.loading_screen.set_loading_text("Loading next video...")
-            self.loading_screen.raise_() # Bring to front
-            QCoreApplication.processEvents() # Process events to ensure loading screen is shown
+            self.loading_screen.raise_()
+            QCoreApplication.processEvents()
         except ValueError:
             QMessageBox.warning(self, "Error", "Current video not found in its directory. Please select a new video.")
-            return
 
+    def load_video_dialog(self):
+        """Open dialog to load video file"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Video File", "",
+            "Video Files (*.mp4 *.avi *.mov *.mkv *.wmv)"
+        )
+
+        if file_path:
+            self.loading_screen.show()
             self.loading_screen.set_loading_text("Loading video...")
-            self.loading_screen.raise_() # Bring to front
-            QCoreApplication.processEvents() # Process events to ensure loading screen is shown
-                
+            self.loading_screen.raise_()
+            QCoreApplication.processEvents()
+            self.load_video_by_path(file_path)
+
     def load_behavior_dialog(self):
         """Open dialog to load behavior file"""
         file_path, _ = QFileDialog.getOpenFileName(
