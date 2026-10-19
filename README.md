@@ -98,8 +98,12 @@ conversion between RGB and YUV can still change RGB values slightly. Variable-ra
 movies retain frame count and order; the existing time-based annotation statistics
 use the video's nominal frame rate.
 
-Automatic detection is a proposal tool for straight, dark arena dividers. It does
-not identify animals or guarantee arena boundaries. Manual rectangles and explicit
+Automatic detection finds straight dark or bright dividers and trims contrasting
+outer margins to the dominant floor tone. It supports bright floors against dark
+backgrounds and dark floors against bright backgrounds. Broad shadows are checked
+for a localized floor transition so gradual illumination is not simply cropped.
+It does not identify animals or guarantee arena boundaries: review proposals,
+especially where animals can enter a shadowed margin. Manual rectangles and explicit
 grids cover layouts without clear divider evidence. Pixel coordinates can be
 adjusted before export. See the official [FFmpeg crop documentation](https://ffmpeg.org/ffmpeg-filters.html#crop)
 and [frame passthrough options](https://ffmpeg.org/ffmpeg.html).
@@ -126,6 +130,7 @@ Reproduce the crop benchmark and visual checks:
 ```console
 python -m tests.test_arena_backend --benchmark
 python tools/plot_export_benchmark.py
+python tools/benchmark_arena_detection.py
 python tools/preview_arena_workflow.py
 ```
 

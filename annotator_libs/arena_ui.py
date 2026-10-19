@@ -346,7 +346,7 @@ class ArenaEditor(QDialog):
         self.grid_button.setEnabled(True)
         if arenas:
             self.arenas = arenas
-            self.hint.setText(f"Found {len(arenas)} arena proposals. Review boundaries and names, then export.")
+            self.hint.setText(f"Found {len(arenas)} arena proposals with outer backgrounds trimmed. Review boundaries and names, then export.")
         else:
             self.hint.setText("No reliable dividers found. Draw arenas manually or create a grid.")
         self.populate_table()

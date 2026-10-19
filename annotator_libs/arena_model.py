@@ -226,20 +226,21 @@ def grid_arenas(width, height, rows=2, columns=2):
 
 
 def _divider_positions(gray, vertical):
-    """Find long narrow dark ridges, avoiding wide shadows and edge walls."""
+    """Find dark or light narrow dividers, avoiding broad illumination steps."""
     image = gray if vertical else gray.T
     height, width = image.shape
     if width < 32 or height < 32:
         return []
-    # Compare each line against nearby background; a divider must remain dark
+    # Compare each line against nearby background; a divider must contrast
     # for most of its length, unlike an animal or a local marking.
     radius = max(5, int(width * 0.018))
     blurred = cv2.GaussianBlur(image, (0, 0), 0.8)
     left = np.roll(blurred, radius, axis=1)
     right = np.roll(blurred, -radius, axis=1)
-    # Require brighter background on both sides. A single illumination step at
+    # Require consistent contrast on both sides. A single illumination step at
     # an outer wall can otherwise masquerade as an additional interior divider.
-    contrast = np.minimum(left, right) - blurred
+    contrast = np.maximum(np.minimum(left, right) - blurred,
+                          blurred - np.maximum(left, right))
     usable = contrast[int(height * 0.08):int(height * 0.92)]
     strength = np.mean(usable > 8, axis=0)
     candidates = np.flatnonzero(strength > 0.66)
@@ -251,10 +252,71 @@ def _divider_positions(gray, vertical):
             if len(group) < width * 0.045][:7]
 
 
+def _floor_interval(profile):
+    """Trim sustained exterior bands whose tone differs from the central floor.
+
+    Median line profiles suppress animals and small marks. Each edge is tested
+    independently, so a bright floor may have only one dark outer wall. Requiring
+    a localized transition avoids treating gradual lighting falloff as a wall.
+    The signed comparison is invariant under intensity inversion.
+    """
+    size = len(profile)
+    if size < 32:
+        return 0, size
+    smooth = cv2.GaussianBlur(profile.reshape(1, -1).astype(np.float32),
+                              (0, 0), max(0.8, size * 0.003)).ravel()
+    center = float(np.median(smooth[int(size * 0.35):int(size * 0.65)]))
+
+    def boundary(values):
+        """Locate the first sustained floor transition from one exterior edge."""
+        edge = float(np.median(values[:max(3, int(size * 0.08))]))
+        difference = center - edge
+        if abs(difference) < 18:
+            return 0
+        # Normalize to the observed background/floor contrast, for either polarity.
+        membership = (values - edge) / difference
+        # A wall can contain several tones (black margin, shadow, then floor).
+        # Seek the floor plateau rather than stopping at the first gray ledge.
+        candidates = np.flatnonzero(membership[:int(size * 0.45)] >= 0.85)
+        if not len(candidates):
+            return 0
+        position = int(candidates[0])
+        radius = max(2, int(size * 0.015))
+        if position < max(2, int(size * 0.025)):
+            return 0
+        before = np.median(membership[max(0, position - 2 * radius):position - radius + 1])
+        after = np.median(membership[position + radius:position + 2 * radius + 1])
+        if after - before < 0.15:
+            return 0
+        return position
+
+    return boundary(smooth), size - boundary(smooth[::-1])
+
+
+def _trim_arena_floor(gray, left, top, right, bottom):
+    """Refine a divider cell to its floor, retaining unambiguous source pixels."""
+    cell = gray[top:bottom, left:right]
+    height, width = cell.shape
+    # Ignore cell-edge separators while estimating the dominant floor profiles.
+    xprofile = np.median(cell[int(height * 0.15):max(int(height * 0.85), 1)], axis=0)
+    x0, x1 = _floor_interval(xprofile)
+    # Interior dividers are already established; trim only exterior cell sides.
+    x0 = x0 if left == 0 else 0
+    x1 = x1 if right == gray.shape[1] else width
+    inner_width = x1 - x0
+    yprofile = np.median(cell[:, x0 + int(inner_width * 0.15):x0 + max(int(inner_width * 0.85), 1)], axis=1)
+    y0, y1 = _floor_interval(yprofile)
+    y0 = y0 if top == 0 else 0
+    y1 = y1 if bottom == gray.shape[0] else height
+    return left + x0, top + y0, left + x1, top + y1
+
+
 def detect_arenas(frame):
     """Suggest rectangles only when sustained divider evidence is present.
 
-    Automatic proposals remain editable. Blank images and animal-sized contours
+    Contrasting exterior walls are trimmed independently for each arena, with
+    equal treatment of light and dark floors. Automatic proposals remain editable.
+    Blank images and animal-sized contours
     deliberately return an empty list, allowing the UI to offer a manual grid.
     """
     if frame is None or frame.ndim not in (2, 3):
@@ -273,5 +335,6 @@ def detect_arenas(frame):
     for top, bottom in zip(ys, ys[1:]):
         for left, right in zip(xs, xs[1:]):
             index = len(arenas) + 1
-            arenas.append(Arena(f"arena_{index}", f"Arena {index}", left, top, right - left, bottom - top))
+            x0, y0, x1, y1 = _trim_arena_floor(gray, left, top, right, bottom)
+            arenas.append(Arena(f"arena_{index}", f"Arena {index}", x0, y0, x1 - x0, y1 - y0))
     return arenas
