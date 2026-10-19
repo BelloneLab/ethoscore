@@ -9,124 +9,132 @@ from PySide6.QtWidgets import QLabel, QProgressBar, QWidget, QHBoxLayout
 from PySide6.QtCore import Qt, QTimer, Signal, QThread, QCoreApplication
 from PySide6.QtGui import QImage, QPixmap, QPainter, QPen, QColor
 import threading
+import os
 from collections import OrderedDict
 import time
 from annotator_libs.annotation_logic import update_annotations_on_frame_change # Import the function
 
 
-class FrameCache:
-    """LRU cache for video frames to improve performance"""
+def _detached_frame_image(frame):
+    """Copy decoded RGB bytes into a thread-safe, independently owned QImage."""
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    height, width, channels = rgb.shape
+    return QImage(rgb.data, width, height, channels * width, QImage.Format_RGB888).copy()
 
-    def __init__(self, max_size=500):
+
+class FrameCache:
+    """Thread-safe QImage LRU bounded by both frame count and decoded bytes."""
+
+    def __init__(self, max_size=500, max_bytes=256 * 1024 * 1024):
         self.cache = OrderedDict()
         self.max_size = max_size
+        self.max_bytes = max_bytes
+        self.current_bytes = 0
         self.lock = threading.Lock()
 
     def get(self, frame_number):
-        """Get frame from cache"""
+        """Get an immutable cached image and mark it recently used."""
         with self.lock:
-            if frame_number in self.cache:
-                # Move to end (most recently used)
+            image = self.cache.get(frame_number)
+            if image is not None:
                 self.cache.move_to_end(frame_number)
-                return self.cache[frame_number]
-        return None
+            return image
 
     def put(self, frame_number, frame_data):
-        """Put frame in cache"""
+        """Store detached images only; QPixmap belongs to the GUI thread."""
+        if not isinstance(frame_data, QImage):
+            raise TypeError("FrameCache accepts QImage objects only.")
+        size = frame_data.sizeInBytes()
         with self.lock:
-            if frame_number in self.cache:
-                # Update existing
-                self.cache.move_to_end(frame_number)
-                self.cache[frame_number] = frame_data
-            else:
-                # Add new
-                self.cache[frame_number] = frame_data
-                if len(self.cache) > self.max_size:
-                    # Remove least recently used
-                    self.cache.popitem(last=False)
+            previous = self.cache.pop(frame_number, None)
+            if previous is not None:
+                self.current_bytes -= previous.sizeInBytes()
+            if size > self.max_bytes or self.max_size < 1:
+                return
+            self.cache[frame_number] = frame_data
+            self.current_bytes += size
+            while len(self.cache) > self.max_size or self.current_bytes > self.max_bytes:
+                _, removed = self.cache.popitem(last=False)
+                self.current_bytes -= removed.sizeInBytes()
 
     def clear(self):
-        """Clear all cached frames"""
+        """Release decoded image memory when changing videos."""
         with self.lock:
             self.cache.clear()
+            self.current_bytes = 0
 
-    def preload_frames(self, video_capture, start_frame, num_frames, callback=None):
-        """Preload frames in background"""
+    def preload_frames(self, video_path, start_frame, num_frames, callback=None):
+        """Legacy helper with an independent capture; return its joinable thread.
+
+        Callers must pass an explicit filename, never a shared VideoCapture.
+        VideoPlayer uses the cancelable FramePreloader instead.
+        """
+        if not isinstance(video_path, (str, os.PathLike)):
+            raise TypeError("Preloading requires an explicit source video path.")
+
         def preload_worker():
-            for i in range(num_frames):
-                frame_num = start_frame + i
-                if frame_num >= 0 and frame_num < int(video_capture.get(cv2.CAP_PROP_FRAME_COUNT)):
-                    # Check if already cached
-                    if self.get(frame_num) is None:
-                        # Read and cache frame
-                        video_capture.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
-                        ret, frame = video_capture.read()
-                        if ret:
-                            # Convert BGR to RGB
-                            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                            # Convert to QImage
-                            h, w, ch = frame_rgb.shape
-                            bytes_per_line = ch * w
-                            q_img = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
-                            # Store as QPixmap for faster display
-                            pixmap = QPixmap.fromImage(q_img)
-                            self.put(frame_num, pixmap)
-                            if callback:
-                                callback(frame_num)
+            """Own and release the decoder entirely within this worker."""
+            capture = cv2.VideoCapture(str(video_path))
+            try:
+                capture.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+                for frame_number in range(start_frame, start_frame + num_frames):
+                    ok, frame = capture.read()
+                    if not ok:
+                        break
+                    self.put(frame_number, _detached_frame_image(frame))
+                    if callback:
+                        callback(frame_number)
+            finally:
+                capture.release()
         thread = threading.Thread(target=preload_worker, daemon=True)
         thread.start()
+        return thread
 
 
 class FramePreloader(QThread):
-    """Background thread for preloading frames"""
+    """Preload detached images with a worker-owned, independent decoder."""
 
-    frame_loaded = Signal(int, int, int)  # Signal emitted when a frame is loaded (current, total, total_frames_to_preload)
-    preload_finished = Signal() # Signal emitted when preloading is complete
+    frame_loaded = Signal(int, int, int)
+    preload_finished = Signal()
 
-    def __init__(self, video_capture, cache, start_frame, num_frames_to_preload, total_frames_in_video, lock):
+    def __init__(self, video_path, cache, start_frame, num_frames_to_preload, total_frames_in_video):
         super().__init__()
-        self.video_capture = video_capture
+        self.video_path = str(video_path)
         self.cache = cache
         self.start_frame = start_frame
         self.num_frames_to_preload = num_frames_to_preload
         self.total_frames_in_video = total_frames_in_video
-        self.lock = lock
-        self._is_running = True # Flag to control thread execution
+        self._stop_requested = threading.Event()
 
     def stop(self):
-        self._is_running = False
+        """Request cancellation between decoder operations."""
+        self._stop_requested.set()
 
     def run(self):
-        """Preload frames in background thread"""
-        preloaded_count = 0
+        """Read sequentially without changing the foreground decoder position."""
+        capture = cv2.VideoCapture(self.video_path)
         last_read_frame = -1
-        for i in range(self.num_frames_to_preload):
-            if not self._is_running:
-                break
-            frame_num = self.start_frame + i
-            if frame_num >= 0 and frame_num < self.total_frames_in_video:
-                # Check if already cached
-                if self.cache.get(frame_num) is None:
-                    # Read and cache frame
-                    with self.lock:
-                        if frame_num != last_read_frame + 1:
-                            self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
-                        ret, frame = self.video_capture.read()
-                        if ret:
-                            last_read_frame = frame_num
-                    if ret:
-                        # Convert BGR to RGB
-                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                        # Convert to QImage
-                        h, w, ch = frame_rgb.shape
-                        bytes_per_line = ch * w
-                        q_img = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
-                        # Store as QPixmap for faster display
-                        pixmap = QPixmap.fromImage(q_img)
-                        self.cache.put(frame_num, pixmap)
-                        preloaded_count += 1
-                        self.frame_loaded.emit(preloaded_count, self.num_frames_to_preload, self.total_frames_in_video)
-        self.preload_finished.emit() # Emit when preloading is done
+        try:
+            if not capture.isOpened():
+                return
+            for offset in range(self.num_frames_to_preload):
+                if self._stop_requested.is_set():
+                    break
+                frame_number = self.start_frame + offset
+                if not 0 <= frame_number < self.total_frames_in_video:
+                    break
+                if self.cache.get(frame_number) is None:
+                    if frame_number != last_read_frame + 1:
+                        capture.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+                    ok, frame = capture.read()
+                    if not ok:
+                        break
+                    last_read_frame = frame_number
+                    self.cache.put(frame_number, _detached_frame_image(frame))
+                self.frame_loaded.emit(offset + 1, self.num_frames_to_preload, self.total_frames_in_video)
+        finally:
+            capture.release()
+            self.preload_finished.emit()
 
 
 class VideoPlayer(QLabel):
@@ -239,6 +247,7 @@ class VideoPlayer(QLabel):
         self.frame_cache = FrameCache(max_size=500)
         self.preloader = None
         self.preload_timer = QTimer()
+        self.preload_timer.setSingleShot(True)
         self.preload_timer.timeout.connect(self.start_preloading)
         self.preload_range = 200  # Preload frames ahead and behind
         self.is_caching_finished = False # Flag to track caching status
@@ -370,56 +379,93 @@ class VideoPlayer(QLabel):
         """Set whether to include the last selected frame in range labeling"""
         self.include_last_frame_in_range = enabled
 
-    def load_video(self, video_path):
-        """Load a video file"""
-        # Stop any existing preloader gracefully before releasing video capture
-        if self.preloader and self.preloader.isRunning():
+    def _stop_decoder(self):
+        """Join the preloader before releasing video resources or clearing cache."""
+        self.preload_timer.stop()
+        if self.preloader is not None:
             self.preloader.stop()
             self.preloader.wait()
-
-        if self.video_capture:
+            self.preloader = None
+        if self.video_capture is not None:
             with self.video_capture_lock:
                 self.video_capture.release()
-
-        with self.video_capture_lock:
-            self.video_capture = cv2.VideoCapture(video_path)
-        if not self.video_capture.isOpened():
-            from PySide6.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "Error", f"Could not open video: {video_path}")
-            return False
-
-        self.video_path = video_path
-        self.total_frames = int(self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
-        self.frame_rate = self.video_capture.get(cv2.CAP_PROP_FPS)
-        self.current_frame = 0
-        self.last_read_frame = -1
-        self.active_labels = {}  # Reset active labels
-        self.held_behavior = None  # Reset held behavior
-        self.current_behavior = None  # Reset current behavior
-
-        # Clear frame cache for new video
+                self.video_capture = None
         self.frame_cache.clear()
-        self.is_caching_finished = False # Reset caching status for new video
+        self.last_read_frame = -1
 
-        # Setup progress bar
-        self.progress_bar.setMinimum(0)
-        self.progress_bar.setMaximum(self.total_frames)
-        self.progress_bar.setVisible(True) # Make progress bar visible
-        self.progress_bar.setValue(self.current_frame + 1) # Set initial value (1-based)
+    def _reset_input_state(self):
+        """Prevent held keys, delayed labels, and seeks crossing arena boundaries."""
+        for timer in (self.navigation_timer, self.navigation_delay_timer,
+                      self.scrubbing_timer, self.deferred_seek_timer,
+                      *self.hold_timers.values(), *self.clear_timers.values()):
+            timer.stop()
+        for name in ('active_labels', 'key_press_start_time', 'is_toggled_active',
+                     'is_stopping_toggle', 'label_key_held', 'range_labeling_active',
+                     'range_labeling_start', 'gamepad_button_states'):
+            getattr(self, name).clear()
+        self.hold_timers.clear()
+        self.clear_timers.clear()
+        self.navigation_direction = 0
+        self.last_navigation_direction = 0
+        self.navigation_start_time = None
+        self.left_key_held = self.right_key_held = False
+        self.labeling_mode = self.removing_mode = self.fast_mode_active = False
+        self._qt_escape_held = self._pygame_escape_held = False
+        self.is_scrubbing = False
+        self.held_behavior = self.current_behavior = self.current_label_behavior = None
+        self.last_created_label = None
+        self._undo_pushed_for_current_action = False
+        self.gamepad_frame_accumulator = 0.5
+        if self.timeline:
+            self.timeline.clear_range_preview()
 
-        # Position the progress bar
+    def shutdown(self):
+        """Stop input timers and join decoder workers before closing the widget."""
+        self._reset_input_state()
+        self._stop_decoder()
+        self.video_path = ""
+        self.total_frames = 0
+        self.current_frame = 0
+
+    def load_video(self, video_path, total_frames=None):
+        """Open a movie, optionally using an independently verified frame count.
+
+        Exact counts from arena export override approximate container counts
+        before progress setup and background preloading begin.
+        """
+        if total_frames is not None and (type(total_frames) is not int or total_frames < 1):
+            raise ValueError("Known video frame count must be a positive integer.")
+        # Validate a replacement independently. A corrupt crop must never
+        # release the old decoder or erase its cached image and held state.
+        replacement = cv2.VideoCapture(str(video_path))
+        valid = replacement.isOpened()
+        ok, first_frame = replacement.read() if valid else (False, None)
+        replacement_count = total_frames if total_frames is not None else int(replacement.get(cv2.CAP_PROP_FRAME_COUNT))
+        if not valid or not ok or replacement_count < 1:
+            replacement.release()
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Error", f"Could not open a readable video: {video_path}")
+            return False
+        first_image = _detached_frame_image(first_frame)
+        replacement_rate = replacement.get(cv2.CAP_PROP_FPS)
+        self._reset_input_state()
+        self._stop_decoder()
+        self.video_path = str(video_path)
+        self.video_capture = replacement
+        self.total_frames = replacement_count
+        self.frame_rate = replacement_rate
+        self.current_frame = 0
+        self.last_read_frame = 0
+        self.frame_cache.put(0, first_image)
+        self.is_caching_finished = False
+        self.progress_bar.setRange(0, self.total_frames)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(1)
         self.resizeEvent(None)
-
         self.update_frame_display()
-
-        # Set target dimensions to current label size for stable scaling
         self.target_width = self.width()
         self.target_height = self.height()
-
-        # Start preloading frames around current position
         self.start_preloading()
-
-        # Set focus to enable keyboard navigation
         self.setFocus()
         return True
 
@@ -428,40 +474,23 @@ class VideoPlayer(QLabel):
         if not self.video_capture or not self.video_capture.isOpened():
             return
 
-        # Try to get frame from cache first
-        cached_pixmap = self.frame_cache.get(self.current_frame)
-
-        if cached_pixmap is None:
-            # Frame not in cache, read from disk
+        image = self.frame_cache.get(self.current_frame)
+        if image is None:
             with self.video_capture_lock:
-                # Optimization: only set position if not sequential
-                if self.current_frame != self.last_read_frame + 1:
+                # Check the actual decoder position as well as our sequential
+                # hint. Cache hits do not advance the foreground decoder.
+                position = self.video_capture.get(cv2.CAP_PROP_POS_FRAMES)
+                if self.current_frame != self.last_read_frame + 1 or abs(position - self.current_frame) > 0.5:
                     self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame)
-                
-                ret, frame = self.video_capture.read()
-                if ret:
-                    self.last_read_frame = self.current_frame
-                else:
+                ok, frame = self.video_capture.read()
+                if not ok:
                     return
-
-            # Convert BGR to RGB
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-            # Convert to QImage
-            h, w, ch = frame_rgb.shape
-            bytes_per_line = ch * w
-            q_img = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
-
-            # Create base pixmap
-            pixmap = QPixmap.fromImage(q_img)
-
-            # Cache the base pixmap (without labels)
-            self.frame_cache.put(self.current_frame, pixmap.copy())
-        else:
-            # Use cached frame
-            pixmap = cached_pixmap.copy()
-            # Get dimensions from cached pixmap
-            w, h = pixmap.width(), pixmap.height()
+                self.last_read_frame = self.current_frame
+            image = _detached_frame_image(frame)
+            self.frame_cache.put(self.current_frame, image)
+        # QPixmap allocation and scaling happen exclusively on the GUI thread.
+        pixmap = QPixmap.fromImage(image)
+        w, h = image.width(), image.height()
 
         # Emit frame changed before drawing to update current_behavior
         self.frame_changed.emit(self.current_frame)
@@ -538,27 +567,35 @@ class VideoPlayer(QLabel):
             self.preloader.wait()
 
         # Calculate preload range around current frame
-        start_frame = max(0, self.current_frame - self.preload_range)
-        end_frame = min(self.total_frames, self.current_frame + self.preload_range + 1)
+        bytes_per_frame = max(1, int(self.video_capture.get(cv2.CAP_PROP_FRAME_WIDTH)) *
+                              int(self.video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT)) * 3)
+        capacity = max(1, min(self.frame_cache.max_size, self.frame_cache.max_bytes // bytes_per_frame))
+        radius = min(self.preload_range, max(0, (capacity - 1) // 2))
+        start_frame = max(0, self.current_frame - radius)
+        end_frame = min(self.total_frames, self.current_frame + radius + 1)
         self.total_frames_to_preload = end_frame - start_frame
         self.current_preloaded_count = 0
 
         # Start new preloader
-        self.preloader = FramePreloader(self.video_capture, self.frame_cache, start_frame,
-                                         self.total_frames_to_preload, self.total_frames, self.video_capture_lock)
+        self.preloader = FramePreloader(self.video_path, self.frame_cache, start_frame,
+                                         self.total_frames_to_preload, self.total_frames)
         self.preloader.frame_loaded.connect(self.on_frame_preloaded)
         self.preloader.preload_finished.connect(self._on_preload_finished) # Connect preload_finished signal
         self.preloader.start()
 
     def on_frame_preloaded(self, current_preloaded, total_to_preload, total_frames_in_video):
         """Handle when a frame has been preloaded"""
+        if self.sender() is not self.preloader:
+            return
         self.current_preloaded_count = current_preloaded
         self.preload_progress.emit(self.current_preloaded_count, total_to_preload)
 
     def _on_preload_finished(self):
         """Handle when preloading is complete"""
 
-        self.is_caching_finished = True
+        if self.sender() is not self.preloader:
+            return
+        self.is_caching_finished = self.total_frames_to_preload >= self.total_frames
         self.caching_complete.emit()
         self.preload_finished.emit() # Emit the new signal
         self.preload_timer.stop() # Stop the timer to prevent further preloading
@@ -583,10 +620,15 @@ class VideoPlayer(QLabel):
         self.scale_and_set_pixmap()
 
         # Reposition widgets
-        if hasattr(self, 'progress_bar') and self.progress_bar.isVisible():
+        # Set geometry even before the main window is shown. Otherwise the
+        # initial welcome-dialog load leaves this bar over the top-left labels.
+        if hasattr(self, 'progress_bar'):
             progress_height = 25
             self.progress_bar.setGeometry(10, self.height() - progress_height - 10,
                                         self.width() - 20, progress_height)
+        if hasattr(self, 'score_overlay'):
+            overlay = self.score_overlay
+            overlay.move(24, max(10, self.height() - overlay.height() - 50))
 
     def update_overlay_preview_bars(self):
         """Update preview bars in the annotation overlay and return their colors"""

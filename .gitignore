@@ -2,3 +2,9 @@ roadmap.md
 __pycache__/
 *.pyc
 behaviors.csv
+SESSION_MEMORY.md
+build/
+dist/
+.test-artifacts/
+tests/artifacts/
+installer-build.log

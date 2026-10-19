@@ -1,6 +1,7 @@
 import os
 import pandas as pd
 import numpy as np
+import tempfile
 from PySide6.QtWidgets import QMessageBox, QStatusBar
 
 
@@ -131,8 +132,13 @@ def sync_video_csv_with_template(df, template_behaviors, csv_path, parent=None):
     return synced_df
 
 
-def save_annotations_to_csv(video_path, annotations, behaviors, status_bar=None):
-    """Save annotations to CSV file using optimized NumPy operations"""
+def save_annotations_to_csv(video_path, annotations, behaviors, status_bar=None, total_frames=None):
+    """Atomically save one CSV row per frame, using a verified count if supplied.
+
+    Arena exports supply a decoded frame count because container headers can be
+    inaccurate for variable-frame-rate movies. A failed save leaves the prior
+    CSV intact and raises so the arena switch can be cancelled.
+    """
     if not video_path:
         if status_bar:
             status_bar.showMessage("Error: No video loaded. Cannot save annotations.", 3000)
@@ -141,9 +147,9 @@ def save_annotations_to_csv(video_path, annotations, behaviors, status_bar=None)
         return
 
     csv_path = os.path.splitext(video_path)[0] + '.csv'
-    total_frames = get_total_frames_from_video(video_path)
-    if total_frames == 0:
-        return
+    total_frames = get_total_frames_from_video(video_path) if total_frames is None else int(total_frames)
+    if total_frames <= 0:
+        raise ValueError("Cannot save annotations without a valid video frame count.")
 
     # Use NumPy for fast data preparation
     num_behaviors = len(behaviors)
@@ -154,7 +160,7 @@ def save_annotations_to_csv(video_path, annotations, behaviors, status_bar=None)
     
     # Fill array from annotations dict
     for frame, active_list in annotations.items():
-        if frame < total_frames:
+        if 0 <= frame < total_frames:
             if isinstance(active_list, list):
                 for b in active_list:
                     if b in behavior_to_idx:
@@ -168,12 +174,23 @@ def save_annotations_to_csv(video_path, annotations, behaviors, status_bar=None)
         data[b] = arr[:, i]
 
     df = pd.DataFrame(data)
-    df.to_csv(csv_path, index=False)
+    descriptor, temporary = tempfile.mkstemp(prefix='.annotations-', suffix='.tmp',
+                                             dir=os.path.dirname(os.path.abspath(csv_path)))
+    try:
+        with os.fdopen(descriptor, 'w', encoding='utf-8', newline='') as handle:
+            df.to_csv(handle, index=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, csv_path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
     
     if status_bar:
         status_bar.showMessage(f"Annotations saved to {csv_path}", 2000)
     else:
         print(f"Annotations saved to {csv_path}")
+    return csv_path
 
 
 def get_total_frames_from_video(video_path):

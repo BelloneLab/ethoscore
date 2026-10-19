@@ -43,6 +43,7 @@ from annotator_libs.annotation_logic import (
     get_default_behaviors
 )
 from annotator_libs.gamification_logic import GamificationManager, LiveScoreWidget, GamificationSettingsDialog
+from annotator_libs.arena_workflow import ArenaWorkflow
 
 # Suppress Qt warnings
 os.environ['QT_LOGGING_RULES'] = '*.warning=false'
@@ -859,7 +860,7 @@ class WelcomeDialog(QDialog):
         # For now, just update the internal state. The dialog would need to be closed and reopened to see changes.
 
 
-class VideoAnnotator(QMainWindow):
+class VideoAnnotator(ArenaWorkflow, QMainWindow):
     """Main application window"""
     
     def __init__(self):
@@ -868,6 +869,7 @@ class VideoAnnotator(QMainWindow):
         self.annotations = {}  # frame_number -> list of behaviors
         self.current_behavior = []
         self.view_only_mode = False  # Flag to track if in view-only mode
+        self.init_arena_workflow()
         # Initialize shortcuts first
         self.shortcuts = {}
         self.undo_stack = [] # Stack for undoing annotations
@@ -1008,6 +1010,7 @@ class VideoAnnotator(QMainWindow):
 
         # Add LiveScoreWidget as an overlay to the video player
         self.live_score_widget.setParent(self.video_player) # Make it a child of video_player
+        self.video_player.score_overlay = self.live_score_widget
         self.live_score_widget.show() # Make sure it's visible
         # Initial positioning will be handled by resizeEvent
 
@@ -1025,7 +1028,10 @@ class VideoAnnotator(QMainWindow):
 
         # Timer for gamepad polling
         self.gamepad_timer = QTimer(self)
-        self.gamepad_timer.timeout.connect(self.video_player.process_gamepad_input)
+        # Modal setup/export dialogs must not leave gamepad labeling active.
+        self.gamepad_timer.timeout.connect(
+            lambda: self.video_player.process_gamepad_input() if QApplication.activeModalWidget() is None else None
+        )
         self.gamepad_timer.start(50) # Poll every 50ms (20 FPS)
 
         # Right panel - behavior buttons
@@ -1103,6 +1109,9 @@ class VideoAnnotator(QMainWindow):
         
         right_panel.addWidget(file_group)
 
+        # Arena controls reuse the existing editor with independent crop files.
+        right_panel.addWidget(self.create_arena_panel())
+
         self.behavior_buttons = BehaviorButtons()
         self.behavior_buttons.behavior_toggled.connect(self.on_behavior_toggled)
         self.behavior_buttons.behavior_added.connect(self.on_behavior_added)
@@ -1176,6 +1185,8 @@ class VideoAnnotator(QMainWindow):
         """Push current annotations to undo stack"""
         if self.view_only_mode:
             return
+
+        self.mark_arena_edited()
 
         # Deep copy current state
         state = {frame: list(behaviors) for frame, behaviors in self.annotations.items()}
@@ -1253,6 +1264,15 @@ class VideoAnnotator(QMainWindow):
         save_action = file_menu.addAction('Save Annotations')
         save_action.setShortcut(QKeySequence(self.shortcuts.get('save', 'Ctrl+S')))
         save_action.triggered.connect(self.save_annotations)
+
+        arenas_menu = menubar.addMenu('Arenas')
+        setup_arenas_action = arenas_menu.addAction('Set Up / Manage Arenas')
+        setup_arenas_action.triggered.connect(self.configure_arenas)
+        previous_arena_action = arenas_menu.addAction('Previous Arena')
+        previous_arena_action.triggered.connect(lambda: self.step_arena(-1))
+        next_arena_action = arenas_menu.addAction('Next Arena')
+        next_arena_action.triggered.connect(lambda: self.step_arena(1))
+        arenas_menu.addAction('Open Arena Folder').triggered.connect(self.open_arena_folder)
 
         # Settings menu
         settings_menu = menubar.addMenu('Settings')
@@ -1808,12 +1828,30 @@ class VideoAnnotator(QMainWindow):
         self.timeline.set_annotations(self.annotations, behavior_colors)
         self.timeline.update()
 
-    def load_video_by_path(self, file_path):
-        """Load video by path"""
+    def load_video_by_path(self, file_path, arena_switch=False):
+        """Load a source or an arena crop after safely settling the old session."""
+        file_path = os.path.abspath(os.fspath(file_path))
+        previous_arena_context = self.arena_project, self.arena_project_dir, self.active_arena_id
+        # Read and validate the target CSV before replacing a working arena.
+        # Loading never repairs or rewrites an existing arena annotation file.
+        arena_annotations, arena_behaviors = (self.read_arena_annotations(file_path)
+                                               if arena_switch else (None, None))
+        if not arena_switch:
+            try:
+                self.prepare_video_change()
+            except Exception as error:
+                QMessageBox.warning(self, "Could not save current session", str(error))
+                return False
+            existing_project = self.discover_arena_project(file_path)
+            if existing_project is not None:
+                return existing_project
         # Save current frame position and score for the previous video
         if self.video_path:
             self.last_frame_positions[self.video_path] = self.video_player.current_frame
             self.last_video_scores[self.video_path] = self.gamification_manager.total_score
+
+        previous_annotations = self.annotations
+        previous_view_only = self.view_only_mode
 
         # Reset view-only mode for new video
         self.view_only_mode = False
@@ -1821,7 +1859,19 @@ class VideoAnnotator(QMainWindow):
         # Record video load time for statistics
         self.video_load_time = time.time()
 
-        if self.video_player.load_video(file_path):
+        # A video's first frame emits callbacks immediately. Detach the old
+        # annotation dictionary before opening it to prevent cross-arena edits.
+        self.annotations = {}
+        self.video_player.annotations = self.annotations
+
+        exact_frames = (self.arena_project.source_metadata.get('frame_count')
+                        if arena_switch and self.arena_project else None)
+        self._loading_video = True
+        try:
+            opened = self.video_player.load_video(file_path, total_frames=exact_frames)
+        finally:
+            self._loading_video = False
+        if opened:
             self.video_path = file_path
             self.video_path_label.setText(os.path.basename(file_path))
             self.annotations = {}  # Reset annotations for new video
@@ -1832,7 +1882,12 @@ class VideoAnnotator(QMainWindow):
             self.gamification_manager.set_total_score(initial_score) # Set the score in the manager
 
             # Try to autoload CSV if exists with flexible behavior handling
-            self.annotations = self.load_annotations_with_behavior_handling(file_path)
+            if arena_switch:
+                self.behavior_buttons.load_behaviors(arena_behaviors)
+                self.video_player.available_behaviors = arena_behaviors
+                self.annotations = arena_annotations
+            else:
+                self.annotations = self.load_annotations_with_behavior_handling(file_path)
 
             # Update VideoPlayer with current annotations for overlay preview bars
             self.video_player.annotations = self.annotations
@@ -1871,6 +1926,21 @@ class VideoAnnotator(QMainWindow):
             # Save as last video
             self.last_video_path = file_path
             self.save_settings()
+            self.refresh_arena_panel()
+            self.update_arena_title()
+            self.save_settings()
+            return True
+        # The player validates its replacement decoder before releasing the old
+        # one. Restore this dictionary too so a failed open cannot erase labels.
+        self.annotations = previous_annotations
+        self.video_player.annotations = previous_annotations
+        self.view_only_mode = previous_view_only
+        if not arena_switch:
+            self.arena_project, self.arena_project_dir, self.active_arena_id = previous_arena_context
+            self.refresh_arena_panel()
+            self.update_arena_title()
+        self.video_player.update_frame_display()
+        return False
 
     def load_next_video_in_main_ui(self):
         """Load the next alphabetical video in the same folder as the currently opened video."""
@@ -1884,7 +1954,8 @@ class VideoAnnotator(QMainWindow):
             dialog = StatisticsDialog(statistics, self)
             dialog.exec()
 
-        current_dir = os.path.dirname(self.video_path)
+        navigation_source = str(self.arena_project.source_path) if self.arena_project else self.video_path
+        current_dir = os.path.dirname(navigation_source)
         video_files = []
         for f in os.listdir(current_dir):
             if f.lower().endswith(('.mp4', '.avi', '.mov', '.mkv', '.wmv')):
@@ -1897,7 +1968,7 @@ class VideoAnnotator(QMainWindow):
             return
 
         try:
-            current_video_index = video_files.index(self.video_path)
+            current_video_index = video_files.index(navigation_source)
             next_video_index = (current_video_index + 1) % len(video_files)
             next_video_path = video_files[next_video_index]
             self.save_annotations()
@@ -2288,10 +2359,16 @@ class VideoAnnotator(QMainWindow):
         if self.view_only_mode:
             QMessageBox.information(self, "Preview Only Mode", "Cannot save annotations in view-only mode.")
             return
-        save_annotations_to_csv(self.video_path, self.annotations, self.behavior_buttons.behaviors, self.statusBar())
+        save_annotations_to_csv(self.video_path, self.annotations, self.behavior_buttons.behaviors,
+                                self.statusBar(), total_frames=self.video_player.total_frames)
+        self.persist_arena_progress()
 
     def auto_save_annotations(self):
         """Automatically save annotations"""
+        # A modal decoder error runs a nested event loop. Keep its timer from
+        # writing the temporarily detached dictionary during a load attempt.
+        if getattr(self, '_loading_video', False) or self._loading_arena:
+            return
         if self.view_only_mode:
             return  # Don't auto-save in view-only mode
         if self.video_path: # Only auto-save if a video is loaded
@@ -2334,6 +2411,20 @@ class VideoAnnotator(QMainWindow):
 
     def closeEvent(self, event):
         """Handle application close event to save settings."""
+        if self.arena_export_worker and self.arena_export_worker.isRunning():
+            QMessageBox.information(self, "Arena export running", "Cancel the export or wait for it to finish before closing.")
+            event.ignore()
+            return
+        try:
+            self.prepare_video_change()
+        except Exception as error:
+            QMessageBox.warning(self, "Could not save current arena", str(error))
+            event.ignore()
+            return
+        # Stop workers before Qt destroys their owning widgets.
+        self.gamepad_timer.stop()
+        self.auto_save_timer.stop()
+        self.video_player.shutdown()
         if self.video_path: # Only save score if a video was loaded
             self.last_video_scores[self.video_path] = self.gamification_manager.total_score
         self.save_settings() # Save general settings
