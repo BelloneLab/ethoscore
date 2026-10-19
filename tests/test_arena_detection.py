@@ -19,7 +19,7 @@ DIVIDER_X, DIVIDER_Y = 320, 240
 BOUNDARY_TOLERANCE = 6
 
 
-def synthetic_scene(inverted=False, border="all", animals=False, gradient=False):
+def synthetic_scene(inverted=False, border="all", animals=False, gradient=False, shaded=False):
     """Create four known arenas, optionally reversing floor/border contrast.
 
     Dividers span the entire source, like physical walls visible over a surround.
@@ -30,6 +30,11 @@ def synthetic_scene(inverted=False, border="all", animals=False, gradient=False)
         left = FLOOR[0]
     frame = np.full((HEIGHT, WIDTH), 25, np.uint8)
     frame[top:bottom, left:right] = 205
+    if shaded:
+        # The floor is continuous but dimmer along its left edge. Ground truth
+        # remains the physical outline, not an intensity threshold within it.
+        illumination = np.linspace(90, 205, right - left).astype(np.uint8)
+        frame[top:bottom, left:right] = illumination
     if gradient:
         illumination = np.linspace(115, 220, WIDTH).astype(np.uint8)
         frame[:] = illumination
@@ -71,6 +76,12 @@ class ContrastAdaptiveDetectionTests(unittest.TestCase):
         for inverted in (False, True):
             with self.subTest(inverted=inverted):
                 self.assert_geometry(*synthetic_scene(inverted=inverted, border="left"))
+
+    def test_shaded_floor_is_kept_in_full(self):
+        """A dimmer floor band must not be mistaken for external background."""
+        for inverted in (False, True):
+            with self.subTest(inverted=inverted):
+                self.assert_geometry(*synthetic_scene(inverted=inverted, shaded=True))
 
     def test_multitone_surround_reaches_floor_boundary(self):
         """A gray ledge inside black padding is still outside the arena floor."""

@@ -48,15 +48,19 @@ python ethoscore.py
 
 ## Multiple arenas in one recording
 
-1. Open a video and select **Set up arenas** in the right sidebar or **Arenas** menu.
+1. Open a video and select **Arenas > Arena Settings > Set up arenas**.
 2. Choose **Auto-detect arenas** to propose crops from stable dividers. Review the
    proposals. If the layout is irregular or detection finds no reliable dividers,
-   drag rectangles over the source preview or create a grid with your chosen row
-   and column counts. Edit names and pixel coordinates in the table.
+   choose **Draw rectangle**, **Trace polygon**, or create a grid. Use **Edit edges**
+   to drag rectangle edges/corners, move an arena, or drag polygon vertices. Click
+   points to trace a polygon; click its first point, double-click, or press Enter
+   to close it. Backspace removes the last point and Escape cancels the trace.
+   Edit names in the table. Rectangles also allow numeric coordinate edits.
 3. Select **Export arenas**. A background FFmpeg job decodes the source once and
    writes all crops. The original recording is never edited. Export can be
    cancelled; partial crops are not published.
-4. Select an arena using the dropdown or previous / next buttons. **Only that
+4. Select an arena in **Arena Settings**, use the **Arenas** menu's previous/next
+   commands, or press **Ctrl+Alt+Left/Right**. **Only that
    arena's subvideo is displayed and annotated.** Switching saves the current
    arena and restores the other arena's frame position. Annotations, undo history,
    and held labeling controls cannot cross into another arena.
@@ -64,6 +68,9 @@ python ethoscore.py
    (green). Completion is an explicit decision, including arenas with no events.
    Editing a completed arena returns it to Ongoing.
 
+Arena management is shown only in its settings dialog, keeping the annotation
+sidebar clear. Polygon crops use a bounding video rectangle with pixels outside
+the traced shape masked black, preserving every source frame and its numbering.
 The source's arena project reopens automatically when you reopen the recording.
 You can rename exported arenas using **Manage arena names**. Crop geometry is
 fixed after export to protect existing annotations. Original CSVs belonging to
@@ -99,9 +106,10 @@ movies retain frame count and order; the existing time-based annotation statisti
 use the video's nominal frame rate.
 
 Automatic detection finds straight dark or bright dividers and trims contrasting
-outer margins to the dominant floor tone. It supports bright floors against dark
-backgrounds and dark floors against bright backgrounds. Broad shadows are checked
-for a localized floor transition so gradual illumination is not simply cropped.
+outer margins at sustained boundary edges, rather than a brightness cutoff within
+the floor. Dimmer floor areas are retained when they share the same physical
+outline. It supports either contrast polarity and rejects gradual illumination
+ramps as evidence of an outer wall.
 It does not identify animals or guarantee arena boundaries: review proposals,
 especially where animals can enter a shadowed margin. Manual rectangles and explicit
 grids cover layouts without clear divider evidence. Pixel coordinates can be

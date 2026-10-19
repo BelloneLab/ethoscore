@@ -35,6 +35,7 @@ class Arena:
     height: int
     status: str = "unlabeled"
     last_frame: int = 0
+    polygon: list[list[int]] | None = None
 
     def __post_init__(self):
         """Reject unsafe folder names and malformed source coordinates."""
@@ -50,6 +51,64 @@ class Arena:
             raise ValueError("Arena bounds must be positive and at least 2 pixels wide and tall.")
         if self.status not in STATUSES:
             raise ValueError(f"Unknown arena status: {self.status}")
+
+        if self.polygon is not None:
+            points, bounds = self._validated_polygon(self.polygon)
+            if bounds != self.rect:
+                raise ValueError("Polygon vertices must match the arena bounding rectangle.")
+            self.polygon = points
+
+    @staticmethod
+    def _validated_polygon(points):
+        """Validate integer vertices and reject crossing or overlapping edges.
+
+        Vertices describe pixel boundaries, so max coordinates are the exclusive
+        rectangle edge. The closing vertex is implicit and must not be repeated.
+        """
+        if not isinstance(points, (list, tuple)) or len(points) < 3:
+            raise ValueError("A polygon needs at least three vertices.")
+        if any(not isinstance(p, (list, tuple)) or len(p) != 2
+               or any(type(v) is not int or v < 0 for v in p) for p in points):
+            raise ValueError("Polygon vertices must be nonnegative integer coordinate pairs.")
+        points = [list(p) for p in points]
+        if len({tuple(p) for p in points}) != len(points):
+            raise ValueError("Polygon vertices must be distinct.")
+
+        def cross(a, b, c):
+            """Return signed twice-area of a triangle with exact integers."""
+            return (b[0]-a[0])*(c[1]-a[1]) - (b[1]-a[1])*(c[0]-a[0])
+
+        def on_segment(a, b, p):
+            """Test collinear inclusive segment membership."""
+            return cross(a, b, p) == 0 and all(min(a[k], b[k]) <= p[k] <= max(a[k], b[k]) for k in (0, 1))
+
+        n = len(points)
+        for i in range(n):
+            a, b, c = points[i-1], points[i], points[(i+1) % n]
+            if cross(a, b, c) == 0 and ((a[0]-b[0])*(c[0]-b[0]) + (a[1]-b[1])*(c[1]-b[1])) > 0:
+                raise ValueError("Polygon edges cannot double back on themselves.")
+            for j in range(i+1, n):
+                if j == i+1 or (i == 0 and j == n-1):
+                    continue
+                a, b = points[i], points[(i+1) % n]
+                c, d = points[j], points[(j+1) % n]
+                if (cross(a,b,c)*cross(a,b,d) < 0 and cross(c,d,a)*cross(c,d,b) < 0) or any((on_segment(a,b,c), on_segment(a,b,d), on_segment(c,d,a), on_segment(c,d,b))):
+                    raise ValueError("Polygon edges cannot intersect or touch each other.")
+        area2 = sum(points[i][0]*points[(i+1)%n][1] - points[(i+1)%n][0]*points[i][1] for i in range(n))
+        xs, ys = zip(*points)
+        bounds = (min(xs), min(ys), max(xs)-min(xs), max(ys)-min(ys))
+        if area2 == 0 or min(bounds[2:]) < 2:
+            raise ValueError("Polygon must enclose a nonzero area at least two pixels wide and tall.")
+        return points, bounds
+
+    def set_polygon(self, points):
+        """Replace shape and synchronize its bounding crop, without partial edits."""
+        if points is None:
+            self.polygon = None
+            return
+        points, bounds = self._validated_polygon(points)
+        self.x, self.y, self.width, self.height = bounds
+        self.polygon = points
 
     @property
     def rect(self):
@@ -273,20 +332,19 @@ def _floor_interval(profile):
         difference = center - edge
         if abs(difference) < 18:
             return 0
-        # Normalize to the observed background/floor contrast, for either polarity.
-        membership = (values - edge) / difference
-        # A wall can contain several tones (black margin, shadow, then floor).
-        # Seek the floor plateau rather than stopping at the first gray ledge.
-        candidates = np.flatnonzero(membership[:int(size * 0.45)] >= 0.85)
-        if not len(candidates):
-            return 0
-        position = int(candidates[0])
+        # Follow a physical edge, not a fraction of the brightest floor value.
+        # A dim floor adjoining a black surround is still part of the arena.
+        # Polarity normalization also supports black floors on white surrounds.
+        oriented = values * np.sign(difference)
+        slope = np.gradient(oriented)
+        start, stop = max(3, int(size * 0.025)), int(size * 0.45)
+        position = start + int(np.argmax(slope[start:stop]))
         radius = max(2, int(size * 0.015))
-        if position < max(2, int(size * 0.025)):
-            return 0
-        before = np.median(membership[max(0, position - 2 * radius):position - radius + 1])
-        after = np.median(membership[position + radius:position + 2 * radius + 1])
-        if after - before < 0.15:
+        before = np.median(oriented[max(0, position - 2 * radius):position - radius + 1])
+        after = np.median(oriented[position + radius:position + 2 * radius + 1])
+        # Reject smooth illumination ramps and narrow transient marks. Median
+        # profiles and temporal sampling provide the spatial/temporal support.
+        if after - before < max(18, abs(difference) * 0.15) or slope[position] < 1.5:
             return 0
         return position
 

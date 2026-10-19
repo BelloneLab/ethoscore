@@ -1111,8 +1111,8 @@ class VideoAnnotator(ArenaWorkflow, QMainWindow):
         
         right_panel.addWidget(file_group)
 
-        # Arena controls reuse the existing editor with independent crop files.
-        right_panel.addWidget(self.create_arena_panel())
+        # Management lives in its menu dialog, preserving annotation space.
+        self.init_arena_settings_dialog()
 
         self.behavior_buttons = BehaviorButtons()
         self.behavior_buttons.behavior_toggled.connect(self.on_behavior_toggled)
@@ -1268,11 +1268,13 @@ class VideoAnnotator(ArenaWorkflow, QMainWindow):
         save_action.triggered.connect(self.save_annotations)
 
         arenas_menu = menubar.addMenu('Arenas')
-        setup_arenas_action = arenas_menu.addAction('Set Up / Manage Arenas')
-        setup_arenas_action.triggered.connect(self.configure_arenas)
+        setup_arenas_action = arenas_menu.addAction('Arena Settings...')
+        setup_arenas_action.triggered.connect(self.open_arena_settings)
         previous_arena_action = arenas_menu.addAction('Previous Arena')
+        previous_arena_action.setShortcut(QKeySequence('Ctrl+Alt+Left'))
         previous_arena_action.triggered.connect(lambda: self.step_arena(-1))
         next_arena_action = arenas_menu.addAction('Next Arena')
+        next_arena_action.setShortcut(QKeySequence('Ctrl+Alt+Right'))
         next_arena_action.triggered.connect(lambda: self.step_arena(1))
         arenas_menu.addAction('Open Arena Folder').triggered.connect(self.open_arena_folder)
 

@@ -28,7 +28,7 @@ from matplotlib.patches import Rectangle
 # User configuration: workload, output location, reference, and figure styling.
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "tests" / "artifacts" / "arena_detection"
-BASELINE_REVISION = "07f0a511cc348caa706d27734defb13ae3d45458"
+BASELINE_REVISION = "d34d1e9"
 REPEATS = 9
 PNG_DPI = 180
 COLORS = ("#7d8797", "#168b77")
@@ -100,7 +100,7 @@ def preview(before, after, output):
         image = image[y0:y1, x0:x1].copy()
         subtitle = "Screenshot preview only; existing colored overlays are part of the supplied image"
     figure, axes = plt.subplots(1, 2, figsize=(10, 4.8), layout="constrained")
-    for axis, detector, title in zip(axes, (before, after), ("Before: full quadrant", "After: floor boundaries")):
+    for axis, detector, title in zip(axes, (before, after), ("Before: brightness cutoff", "After: boundary edges")):
         axis.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
         for index, arena in enumerate(detector(image)):
             color = ARENA_COLORS[index % len(ARENA_COLORS)]
@@ -125,7 +125,9 @@ def main():
     scenarios = [("bright floor", dict()), ("dark floor", {"inverted": True}),
                  ("left border", {"border": "left"}), ("no border", {"border": "none"}),
                  ("animals", {"animals": True}),
-                 ("illumination", {"border": "none", "gradient": True})]
+                 ("illumination", {"border": "none", "gradient": True}),
+                 ("shaded floor", {"shaded": True}),
+                 ("shaded dark", {"shaded": True, "inverted": True})]
     rows, summaries = [], []
     for name, parameters in scenarios:
         image, expected = synthetic_scene(**parameters)

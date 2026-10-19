@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 
 from annotator_libs.annotation_logic import apply_range_label
 from annotator_libs.arena_model import ArenaProject, default_project_dir
-from annotator_libs.arena_ui import ArenaEditor, ExportWorker, STATUS_COLORS, STATUS_NAMES
+from annotator_libs.arena_ui import ArenaEditor, ExportWorker, STATUS_COLORS, STATUS_NAMES, ARENA_STYLE
 
 
 class ArenaWorkflow:
@@ -35,7 +35,7 @@ class ArenaWorkflow:
         self._loading_arena = False
 
     def create_arena_panel(self):
-        """Build a compact arena selector with accessible status text and colors."""
+        """Build arena management controls owned only by the settings dialog."""
         group = QGroupBox("ARENAS")
         group.setStyleSheet("""
             QGroupBox { color: #9fb0c5; font-weight: bold; border: 1px solid #3d4a5a;
@@ -88,6 +88,25 @@ class ArenaWorkflow:
         layout.addWidget(self.arena_folder_button)
         self.refresh_arena_panel()
         return group
+
+    def init_arena_settings_dialog(self):
+        """Keep management off the annotation sidebar while retaining its state."""
+        self.arena_settings_dialog = QDialog(self)
+        self.arena_settings_dialog.setWindowTitle("Ethoscore | Arena settings")
+        self.arena_settings_dialog.setStyleSheet(ARENA_STYLE)
+        self.arena_settings_dialog.setMinimumWidth(450)
+        layout = QVBoxLayout(self.arena_settings_dialog)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.addWidget(self.create_arena_panel())
+        close = QPushButton("Done")
+        close.clicked.connect(self.arena_settings_dialog.accept)
+        layout.addWidget(close)
+
+    def open_arena_settings(self):
+        """Open the menu's management dialog without leaving held labels active."""
+        self._settle_arena_input()
+        self.refresh_arena_panel()
+        self.arena_settings_dialog.exec()
 
     @staticmethod
     def status_icon(status):

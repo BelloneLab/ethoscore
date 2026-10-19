@@ -17,6 +17,9 @@ import subprocess
 import tempfile
 import threading
 
+import cv2
+import numpy as np
+
 from annotator_libs.arena_model import ArenaProject, MANIFEST_NAME, atomic_json, source_identity
 
 
@@ -172,14 +175,37 @@ def export_arenas(source, arenas, project_dir, progress=None, cancel=None, lossl
     report = progress or (lambda value: None)
     try:
         report(0.0)
-        if len(arenas) == 1:
-            filters = "[0:v:0]" + f"crop={arenas[0].width}:{arenas[0].height}:{arenas[0].x}:{arenas[0].y}:exact=1[c0]"
-        else:
-            split = "[0:v:0]split=" + str(len(arenas)) + "".join(f"[s{i}]" for i in range(len(arenas)))
-            crops = [f"[s{i}]crop={a.width}:{a.height}:{a.x}:{a.y}:exact=1[c{i}]" for i, a in enumerate(arenas)]
-            filters = ";".join([split, *crops])
-        arguments = ["-v", "error", "-i", source, "-filter_complex_threads", "1", "-filter_complex", filters,
-                     "-progress", "pipe:1", "-nostats"]
+        # One source decode feeds every arena; static masks repeat their final
+        # frame through FFmpeg framesync without setting an output duration/FPS.
+        filters = []
+        arguments = ["-v", "error", "-i", source]
+        if len(arenas) > 1:
+            filters.append("[0:v:0]split=" + str(len(arenas)) + "".join(f"[s{i}]" for i in range(len(arenas))))
+        mask_input = 1
+        for index, arena in enumerate(arenas):
+            source_label = f"[s{index}]" if len(arenas) > 1 else "[0:v:0]"
+            crop = source_label + f"crop={arena.width}:{arena.height}:{arena.x}:{arena.y}:exact=1"
+            if arena.polygon is None:
+                filters.append(crop + f"[c{index}]")
+                continue
+            # Rasterize once, in source-pixel coordinates. PNG is lossless and
+            # RGB mask planes retain exactly 0/255 during GBR compositing.
+            mask = np.zeros((arena.height, arena.width, 3), dtype=np.uint8)
+            vertices = np.asarray(arena.polygon, dtype=np.int32) - [arena.x, arena.y]
+            cv2.fillPoly(mask, [vertices], (255, 255, 255))
+            mask_path = stage / f"{arena.id}-mask.png"
+            ok, encoded = cv2.imencode(".png", mask)
+            if not ok:
+                raise RuntimeError("Cannot create polygon mask.")
+            encoded.tofile(str(mask_path))
+            arguments += ["-i", mask_path]
+            filters += [crop + f",format=gbrp,split=2[p{index}][b{index}]",
+                        f"[b{index}]lutrgb=r=0:g=0:b=0[k{index}]",
+                        f"[{mask_input}:v:0]format=gbrp[m{index}]",
+                        f"[k{index}][p{index}][m{index}]maskedmerge[c{index}]"]
+            mask_input += 1
+        arguments += ["-filter_complex_threads", "1", "-filter_complex", ";".join(filters),
+                      "-progress", "pipe:1", "-nostats"]
         estimated_count = max(1, project.source_metadata.get("frame_count", 1))
         for index, arena in enumerate(arenas):
             # No -r, -t, or fps filter: every crop receives every source frame.

@@ -80,6 +80,17 @@ def main():
         app.processEvents()
         editor.grab().save(str(OUTPUT_DIR / 'arena-editor-preview.png'))
         editor.reject()
+        # A separate draft shows editable polygon handles without changing the
+        # rectangular export fixture used to inspect the annotation window.
+        polygon_editor = ArenaEditor(source, synthetic_frame(0), arenas)
+        polygon_editor.arenas[1].set_polygon([[415, 18], [770, 32], [782, 265], [430, 280]])
+        polygon_editor.resize(*EDITOR_SIZE)
+        polygon_editor.show()
+        polygon_editor.populate_table()
+        polygon_editor.table.selectRow(1)
+        app.processEvents()
+        polygon_editor.grab().save(str(OUTPUT_DIR / 'arena-polygon-preview.png'))
+        polygon_editor.reject()
         export_arenas(source, arenas, default_project_dir(source))
 
         def private_settings(organization, application):
@@ -105,6 +116,10 @@ def main():
                 window.video_player.preloader.wait()
             app.processEvents()
             window.grab().save(str(OUTPUT_DIR / 'arena-annotator-preview.png'))
+            window.arena_settings_dialog.show()
+            app.processEvents()
+            window.arena_settings_dialog.grab().save(str(OUTPUT_DIR / 'arena-settings-preview.png'))
+            window.arena_settings_dialog.close()
             window.close()
             app.processEvents()
         setup = InstallerWindow()

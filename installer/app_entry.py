@@ -64,7 +64,16 @@ def smoke_test(report_path: Path) -> None:
         if len(proposals) != 2:
             raise RuntimeError("The packaged arena detector failed its two-arena fixture.")
         arenas = [Arena("left", "Left arena", 0, 0, 64, 64), Arena("right", "Right arena", 64, 0, 64, 64)]
+        arenas[1].set_polygon([[64, 0], [128, 0], [64, 64]])
         export_arenas(source, arenas, default_project_dir(source))
+        masked = cv2.VideoCapture(str(arenas[1].video_path(default_project_dir(source))))
+        ok, masked_frame = masked.read()
+        masked.release()
+        if not ok or int(masked_frame[50, 50].max()) > 5:
+            raise RuntimeError("The packaged polygon export did not mask its exterior.")
+        if (window.arena_settings_dialog.isVisible()
+                or not window.arena_settings_dialog.isAncestorOf(window.arena_selector)):
+            raise RuntimeError("Arena management must reside only in its settings dialog.")
         if not window.load_video_by_path(str(source)) or window.active_arena_id != "left":
             raise RuntimeError("The packaged arena project could not reopen its first crop.")
         behavior = window.behavior_buttons.behaviors[0]
@@ -80,7 +89,8 @@ def smoke_test(report_path: Path) -> None:
         report_path.write_text(json.dumps({"status": "passed", "frozen": bool(getattr(sys, "frozen", False)),
                                           "window": window.windowTitle(), "ffmpeg": completed.stdout.splitlines()[0],
                                           "assets": str(resource), "arenas": {"detected": len(proposals), "exported": 2,
-                                          "frames": 12, "annotation_isolation": True, "switch_restoration": True}}, indent=2), encoding="utf-8")
+                                          "frames": 12, "polygon_mask": True, "settings_menu_only": True,
+                                          "annotation_isolation": True, "switch_restoration": True}}, indent=2), encoding="utf-8")
         window.close()
         app.processEvents()
 
