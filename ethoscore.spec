@@ -168,9 +168,15 @@ exe = EXE(
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,
+    icon='assets/branding/ethoscore-icon.ico' if sys.platform == 'win32' else None,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
 )
+
+if sys.platform == 'darwin':
+    app = BUNDLE(exe, name='Ethoscore.app',
+                 icon='assets/branding/ethoscore-icon.icns',
+                 bundle_identifier='org.bellonelab.ethoscore')

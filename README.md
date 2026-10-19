@@ -1,5 +1,10 @@
 # Ethoscore : Video Behavior Annotator
 
+![Ethoscore logo](assets/branding/ethoscore-logo.svg)
+
+The installer, application windows, taskbar and launch shortcuts share one mouse-and-check icon.
+Editable SVG logos and native icon files are in [assets/branding](assets/branding/README.md).
+
 Ethoscore is a video annotation tool for behavioral analysis, built with PySide6 and OpenCV. Annotate video footage with specific behaviors using keyboard, mouse, and gamepad controls.
 
 ![Screenshot](assets/Screenshot.jpg)

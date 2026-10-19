@@ -17,8 +17,10 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name='Ethoscore',
-          console=False, debug=False, strip=False, upx=False)
+          console=False, debug=False, strip=False, upx=False,
+          icon=str(root / 'assets/branding/ethoscore-icon.ico') if sys.platform == 'win32' else None)
 collection = COLLECT(exe, a.binaries, a.datas, name='Ethoscore', strip=False, upx=False)
 if sys.platform == 'darwin':
     app = BUNDLE(collection, name='Ethoscore.app', bundle_identifier='org.bellonelab.ethoscore',
+                 icon=str(root / 'assets/branding/ethoscore-icon.icns'),
                  info_plist={'CFBundleName': 'Ethoscore', 'NSHighResolutionCapable': True})

@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Ethoscore</title>
+  <desc id="desc">A gentle mint mouse with coral ears and a scoring check on a midnight rounded tile.</desc>
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="#142D3B"/>
+  <!-- Broad silhouettes preserve the character at desktop and taskbar sizes. -->
+  <circle cx="158" cy="180" r="76" fill="#A9EAD9"/>
+  <circle cx="354" cy="180" r="76" fill="#A9EAD9"/>
+  <circle cx="158" cy="180" r="44" fill="#EEB5A5"/>
+  <circle cx="354" cy="180" r="44" fill="#EEB5A5"/>
+  <path d="M256 184C180 184 137 234 149 300C157 344 207 389 256 405C305 389 355 344 363 300C375 234 332 184 256 184Z" fill="#A9EAD9"/>
+  <ellipse cx="209" cy="278" rx="12" ry="16" fill="#142D3B"/>
+  <ellipse cx="303" cy="278" rx="12" ry="16" fill="#142D3B"/>
+  <path d="M242 330Q256 321 270 330Q272 339 256 349Q240 339 242 330Z" fill="#142D3B"/>
+  <!-- A separate completion badge ties the animal to behavioral scoring. -->
+  <circle cx="397" cy="397" r="67" fill="#142D3B"/>
+  <circle cx="397" cy="397" r="51" fill="#53C9AC"/>
+  <path d="M373 397L390 414L423 380" fill="none" stroke="#142D3B" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

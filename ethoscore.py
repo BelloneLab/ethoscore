@@ -6,6 +6,7 @@ import json
 import warnings
 import cv2
 import numpy as np
+from branding import application_icon, configure_application, set_process_identity
 
 def resource_path(relative_path):
     """ Get absolute path to resource, works for dev and for PyInstaller """
@@ -13,7 +14,7 @@ def resource_path(relative_path):
         # PyInstaller creates a temp folder and stores path in _MEIPASS
         base_path = sys._MEIPASS
     except Exception:
-        base_path = os.path.abspath(".")
+        base_path = os.path.dirname(os.path.abspath(__file__))
 
     return os.path.join(base_path, relative_path)
 
@@ -865,6 +866,7 @@ class VideoAnnotator(ArenaWorkflow, QMainWindow):
     
     def __init__(self):
         super().__init__()
+        self.setWindowIcon(application_icon())
         self.video_path = ""
         self.annotations = {}  # frame_number -> list of behaviors
         self.current_behavior = []
@@ -2530,7 +2532,9 @@ def main():
     # Record program start time
     program_start_time = time.time()
 
+    set_process_identity()
     app = QApplication(sys.argv)
+    configure_application(app)
     window = VideoAnnotator()
     window.program_start_time = program_start_time
     window.video_player.program_start_time = program_start_time

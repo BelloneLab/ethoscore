@@ -20,6 +20,7 @@ import tempfile
 from typing import Callable
 import urllib.request
 import uuid
+from branding import asset_path
 
 REPOSITORY = "BelloneLab/ethoscore"
 MARKER = ".ethoscore-install.json"
@@ -187,6 +188,7 @@ def install_payload(archive: Path, destination: Path, desktop: bool = True, menu
         state = {"application": "Ethoscore", "schema": 1, "version": version,
                  "platform": platform_key(), "directory": str(final.relative_to(destination)),
                  "executable": metadata["executable"], "desktop": desktop, "menu": menu}
+        _install_branding(destination, final)
         atomic_text(destination / MARKER, json.dumps(state, indent=2))
         _write_launcher(destination, state)
         if shortcuts:
@@ -239,11 +241,33 @@ def _write_launcher(destination: Path, state: dict) -> None:
             link.symlink_to(app, target_is_directory=True)
 
 
-def _windows_shortcut(path: Path, executable: Path, cwd: Path, arguments: str = "") -> None:
+def _install_branding(destination: Path, version_directory: Path) -> None:
+    """Publish stable shortcut artwork, preferring the downloaded version's brand.
+
+    Older payloads do not contain the shell-artwork directory, so the setup's own
+    matching artwork provides compatibility when reinstalling an earlier version.
+    """
+    target_directory = destination / "assets/branding"
+    target_directory.mkdir(parents=True, exist_ok=True)
+    for filename in ("ethoscore-icon.svg", "ethoscore-icon.ico", "ethoscore-icon.png",
+                     "ethoscore-icon.icns", "ethoscore-logo.svg", "ethoscore-logo-light.svg"):
+        source = version_directory / "branding" / filename
+        if not source.is_file():
+            source = asset_path(filename)
+        if source.is_file():
+            target = target_directory / filename
+            temporary = target.with_name(target.name + "." + uuid.uuid4().hex + ".tmp")
+            shutil.copyfile(source, temporary)
+            os.replace(temporary, target)
+
+
+def _windows_shortcut(path: Path, executable: Path, cwd: Path, arguments: str = "",
+                      icon: Path | None = None) -> None:
     """Use the Windows shell COM API to write a .lnk without command interpolation."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    script = "$s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:ETHO_LINK);$s.TargetPath=$env:ETHO_TARGET;$s.Arguments=$env:ETHO_ARGUMENTS;$s.WorkingDirectory=$env:ETHO_CWD;$s.Description='Ethoscore behavioral video annotation';$s.Save()"
-    env = dict(os.environ, ETHO_LINK=str(path), ETHO_TARGET=str(executable), ETHO_CWD=str(cwd), ETHO_ARGUMENTS=arguments)
+    script = "$s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:ETHO_LINK);$s.TargetPath=$env:ETHO_TARGET;$s.Arguments=$env:ETHO_ARGUMENTS;$s.WorkingDirectory=$env:ETHO_CWD;$s.IconLocation=$env:ETHO_ICON;$s.Description='Ethoscore behavioral video annotation';$s.Save()"
+    env = dict(os.environ, ETHO_LINK=str(path), ETHO_TARGET=str(executable), ETHO_CWD=str(cwd),
+               ETHO_ARGUMENTS=arguments, ETHO_ICON=str(icon or executable) + ",0")
     subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script], env=env, check=True,
                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), capture_output=True)
 
@@ -270,12 +294,13 @@ def create_shortcuts(destination: Path, state: dict) -> None:
     desktop = _desktop_directory() if state["desktop"] else None
     if os.name == "nt":
         host = Path(os.environ.get("SystemRoot", "C:/Windows")) / "System32/wscript.exe"
+        icon = destination / "assets/branding/ethoscore-icon.ico"
         arguments = '"' + str(destination / "Launch Ethoscore.vbs") + '"'
         if desktop:
-            _windows_shortcut(desktop / "Ethoscore.lnk", host, destination / "user-data", arguments)
+            _windows_shortcut(desktop / "Ethoscore.lnk", host, destination / "user-data", arguments, icon)
         if state["menu"]:
             menu = Path(os.environ["APPDATA"]) / "Microsoft/Windows/Start Menu/Programs"
-            _windows_shortcut(menu / "Ethoscore.lnk", host, destination / "user-data", arguments)
+            _windows_shortcut(menu / "Ethoscore.lnk", host, destination / "user-data", arguments, icon)
     elif platform.system() == "Darwin":
         app = destination / "Ethoscore.app"
         for parent in ([desktop] if desktop else []) + ([Path.home() / "Applications"] if state["menu"] else []):
@@ -289,7 +314,8 @@ def create_shortcuts(destination: Path, state: dict) -> None:
     else:
         # Desktop Entry quoting follows the freedesktop string escaping rules.
         launch_path = str(destination / "Launch Ethoscore").replace("\\", "\\\\").replace('"', '\\"').replace("`", "\\`").replace("$", "\\$")
-        content = f'[Desktop Entry]\nType=Application\nName=Ethoscore\nComment=Behavioral video annotation\nExec="{launch_path}"\nTerminal=false\nCategories=Science;Education;\n'
+        icon_path = str(destination / "assets/branding/ethoscore-icon.svg").replace("\\", "\\\\").replace("\n", "\\n")
+        content = f'[Desktop Entry]\nType=Application\nName=Ethoscore\nComment=Behavioral video annotation\nExec="{launch_path}"\nIcon={icon_path}\nTerminal=false\nCategories=Science;Education;\n'
         for parent in ([desktop] if desktop else []) + ([Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "applications"] if state["menu"] else []):
             parent.mkdir(parents=True, exist_ok=True)
             target = parent / "ethoscore.desktop"

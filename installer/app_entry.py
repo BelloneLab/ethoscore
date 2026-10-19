@@ -18,10 +18,13 @@ def smoke_test(report_path: Path) -> None:
     from PySide6.QtCore import QSettings
     from PySide6.QtWidgets import QApplication
     from PySide6.QtGui import QFontDatabase, QFont
+    from branding import configure_application, set_process_identity
     with tempfile.TemporaryDirectory(prefix="ethoscore-native-smoke-") as temporary, contextlib.chdir(temporary):
         QSettings.setDefaultFormat(QSettings.IniFormat)
         QSettings.setPath(QSettings.IniFormat, QSettings.UserScope, temporary)
+        set_process_identity()
         app = QApplication(["Ethoscore smoke test"])
+        configure_application(app)
         if sys.platform == "win32":
             QFontDatabase.addApplicationFont(str(Path(os.environ.get("SystemRoot", "C:/Windows")) / "Fonts/segoeui.ttf"))
             app.setFont(QFont("Segoe UI", 10))
@@ -40,6 +43,8 @@ def smoke_test(report_path: Path) -> None:
         resource = Path(ethoscore.resource_path("assets/controller-logo.svg"))
         if not resource.is_file():
             raise RuntimeError("The packaged SVG assets could not be found.")
+        if window.windowIcon().isNull() or window.windowIcon().pixmap(32, 32).isNull():
+            raise RuntimeError("The packaged Ethoscore window icon could not render.")
         ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
         completed = subprocess.run([ffmpeg, "-version"], capture_output=True, text=True, check=True,
                                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))

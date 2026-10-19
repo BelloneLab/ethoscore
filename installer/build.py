@@ -50,6 +50,9 @@ def build(version: str, skip_application: bool = False) -> None:
     with tarfile.open(archive, "w:gz", compresslevel=3, dereference=False) as bundle:
         bundle.add(metadata_path, arcname="payload.json")
         bundle.add(application, arcname=application.name)
+        # Keep shell artwork outside the frozen runtime layout so installers can
+        # refresh stable shortcut icons from both bundled and online updates.
+        bundle.add(root / "assets/branding", arcname="branding")
     release = root / "dist/releases"
     release.mkdir(parents=True, exist_ok=True)
     target = release / f"Ethoscore-{platform_key()}.tar.gz"

@@ -16,6 +16,8 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog,
                               QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
                               QMessageBox, QProgressBar, QPushButton, QTextEdit,
                               QVBoxLayout, QWidget)
+from PySide6.QtSvgWidgets import QSvgWidget
+from branding import asset_path, application_icon, configure_application, set_process_identity
 
 from installer.backend import (default_destination, download_release, install_payload,
                                latest_release, launch, read_install)
@@ -65,6 +67,7 @@ class InstallerWindow(QMainWindow):
         super().__init__()
         self.worker = None
         self.setWindowTitle("Ethoscore Setup")
+        self.setWindowIcon(application_icon())
         self.resize(760, 710)
         self.setMinimumSize(650, 650)
         self.setStyleSheet("""
@@ -95,9 +98,10 @@ class InstallerWindow(QMainWindow):
         eyebrow = QLabel("BEHAVIORAL ANNOTATION  /  SETUP")
         eyebrow.setObjectName("eyebrow")
         layout.addWidget(eyebrow)
-        title = QLabel("Ethoscore Setup")
-        title.setObjectName("title")
-        layout.addWidget(title)
+        # The same vector mark is used by the shell, taskbar, and setup header.
+        logo = QSvgWidget(str(asset_path("ethoscore-logo-light.svg")))
+        logo.setFixedSize(322, 80)
+        layout.addWidget(logo)
         subtitle = QLabel("Install Ethoscore. Return here anytime to update your application.")
         subtitle.setObjectName("subtitle")
         subtitle.setWordWrap(True)
@@ -242,8 +246,9 @@ class InstallerWindow(QMainWindow):
 
 def main() -> int:
     """Start the graphical installer from either source or a packaged executable."""
+    set_process_identity(setup=True)
     app = QApplication(sys.argv)
-    app.setApplicationName("Ethoscore Setup")
+    configure_application(app, setup=True)
     if sys.platform == "win32" and not QFontDatabase.families():
         font_dir = Path(os.environ.get("SystemRoot", "C:/Windows")) / "Fonts"
         for filename in ("segoeui.ttf", "segoeuib.ttf"):
