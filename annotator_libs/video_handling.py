@@ -141,6 +141,8 @@ class VideoPlayer(QLabel):
     """Widget to display video frames and handle navigation"""
 
     frame_changed = Signal(int)
+    transport_stopping = Signal()  # Stop playback before attempted loads or shutdown.
+    video_loaded = Signal()  # Refresh whole-video controls only after success.
     label_toggled = Signal(str, bool, int, int)  # behavior, is_active, start_frame, end_frame
     current_behavior_changed = Signal(str)
     remove_labels = Signal()
@@ -421,6 +423,7 @@ class VideoPlayer(QLabel):
 
     def shutdown(self):
         """Stop input timers and join decoder workers before closing the widget."""
+        self.transport_stopping.emit()
         self._reset_input_state()
         self._stop_decoder()
         self.video_path = ""
@@ -433,6 +436,7 @@ class VideoPlayer(QLabel):
         Exact counts from arena export override approximate container counts
         before progress setup and background preloading begin.
         """
+        self.transport_stopping.emit()
         if total_frames is not None and (type(total_frames) is not int or total_frames < 1):
             raise ValueError("Known video frame count must be a positive integer.")
         # Validate a replacement independently. A corrupt crop must never
@@ -467,6 +471,7 @@ class VideoPlayer(QLabel):
         self.target_height = self.height()
         self.start_preloading()
         self.setFocus()
+        self.video_loaded.emit()
         return True
 
     def update_frame_display(self):
@@ -694,6 +699,8 @@ class VideoPlayer(QLabel):
 
     def goto_frame(self, frame_number):
         """Go to specific frame"""
+        if self.total_frames < 1:
+            return
         old_frame = self.current_frame
         
         if frame_number < 0:
@@ -716,7 +723,8 @@ class VideoPlayer(QLabel):
 
         # Update progress bar (1-based for UI and CSV)
         self.progress_bar.setValue(self.current_frame + 1)
-        QCoreApplication.processEvents()  # Keep progress bar responsive during heavy loads
+        # Never process nested events here: a second seek or load could replace
+        # the decoder while this frame transition is still being committed.
 
         # Update current_behavior for the new frame BEFORE updating display
         active_behaviors_list = update_annotations_on_frame_change(

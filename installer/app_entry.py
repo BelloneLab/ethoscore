@@ -84,11 +84,21 @@ def smoke_test(report_path: Path) -> None:
             raise RuntimeError("The packaged arena switch did not restore saved annotations.")
         if window.video_player.total_frames != 12:
             raise RuntimeError("The packaged arena crop changed the decoded frame count.")
+        from annotator_libs.bout_grid import GridSource, GridConfig, export_bout_grid
+        grid = export_bout_grid(
+            [GridSource(str(source), {0: ["test"], 1: ["test"], 5: ["test"]}, "Smoke")],
+            "test", Path(temporary) / "grid",
+            config=GridConfig(rows=1, columns=2, output_fps=12, page_seconds=1))
+        if grid["bouts"] != 2 or grid["frames"] != 12:
+            raise RuntimeError("The packaged bout-grid movie failed its complete-bout fixture.")
+        if not hasattr(window, "playback_controls"):
+            raise RuntimeError("The packaged playback control bar is missing.")
         report_path.parent.mkdir(parents=True, exist_ok=True)
         window.grab().save(str(report_path.with_suffix(".png")))
         report_path.write_text(json.dumps({"status": "passed", "frozen": bool(getattr(sys, "frozen", False)),
                                           "window": window.windowTitle(), "ffmpeg": completed.stdout.splitlines()[0],
-                                          "assets": str(resource), "arenas": {"detected": len(proposals), "exported": 2,
+                                          "assets": str(resource), "bout_grid": {"bouts": grid["bouts"], "frames": grid["frames"]},
+                                          "arenas": {"detected": len(proposals), "exported": 2,
                                           "frames": 12, "polygon_mask": True, "settings_menu_only": True,
                                           "annotation_isolation": True, "switch_restoration": True}}, indent=2), encoding="utf-8")
         window.close()

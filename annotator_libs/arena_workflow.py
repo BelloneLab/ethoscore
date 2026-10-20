@@ -158,6 +158,8 @@ class ArenaWorkflow:
         Without this boundary, a range started in one arena could end in the
         next. Timer cancellation also prevents delayed key handlers leaking.
         """
+        if hasattr(self, "playback_controls"):
+            self.playback_controls.pause()
         player = self.video_player
         if self.video_path and not self.view_only_mode:
             for behavior, enabled in list(player.range_labeling_active.items()):

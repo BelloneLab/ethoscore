@@ -46,6 +46,46 @@ pip install -r requirements.txt
 python ethoscore.py
 ```
 
+## Playback and fast navigation
+
+The compact control bar below the video provides play/pause (Space), first/last
+frame, single-frame steps, five-second jumps, and speeds from 0.25x to 8x. Click
+or drag anywhere on the full-video seek slider, or enter a frame number directly.
+Over the slider, the mouse wheel moves one second; Shift+wheel moves ten seconds;
+Ctrl+wheel moves one frame. Scrubbing coalesces intermediate seeks and decodes
+the exact final frame on release.
+
+While labeling, playback visits every frame, slowing if necessary rather than
+skipping annotations. Manual transport jumps finish held annotation gestures.
+Playback pauses when opening dialogs or switching videos/arenas.
+
+## Behavior bout grid movies
+
+Choose **Export > Behavior Bout Grid Movie**, select a behavior, and choose the
+current video/arena or all arenas in the recording. A bout is a contiguous run
+of annotated frames; missing frames separate bouts. The current arena uses its
+unsaved label snapshot; other arenas use their saved CSV annotations.
+
+The dark, labeled, independently looping tiles follow the grid-movie style in
+[MAMIR](https://github.com/BelloneLab/MAMIR). Defaults are 4 rows by 5 columns,
+176-pixel tiles, 12 FPS, and at least 4 seconds per page. Each page extends to its
+longest bout, so long bouts are not cut short. Every bout is included across
+successive pages. This uses the video/arena view; it does not infer tracked animal
+positions for subject-centered crops.
+
+The chosen new folder contains `bout_grid.mp4` and `bouts.csv`, including exact
+1-based inclusive source-frame ranges, source/arena identity, durations, and
+page/tile positions. Source videos and annotations are unchanged. The overview
+movie resamples at its selected FPS using nominal source FPS (including for VFR
+sources); it is a review visualization, not a frame-preserving archival crop.
+Short bouts loop, tiles preserve aspect ratio, and audio is omitted. Non-ASCII
+labels are preserved exactly in CSV; the movie's lightweight font uses ASCII
+fallbacks. Export runs in the background, supports cancellation, and never
+overwrites an existing output folder.
+
+`python tools/benchmark_bout_grid.py` reproduces the synthetic bounded-cache
+comparison and exports raw timings, summaries, and PNG/PDF/SVG figures.
+
 ## Multiple arenas in one recording
 
 1. Open a video and select **Arenas > Arena Settings > Set up arenas**.

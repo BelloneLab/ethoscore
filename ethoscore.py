@@ -34,6 +34,7 @@ from PySide6.QtSvgWidgets import QSvgWidget
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
 import pygame
 from annotator_libs.video_handling import VideoPlayer
+from annotator_libs.playback_controls import PlaybackControls
 from annotator_libs.ui_components import (BehaviorButtons, TimelineWidget, LoadingScreen, 
                                         get_friendly_controller_name, JoystickCurveGraph)
 from annotator_libs.annotation_logic import (
@@ -1009,6 +1010,8 @@ class VideoAnnotator(ArenaWorkflow, QMainWindow):
 
         self.video_player.keyPressEvent = video_player_keyPressEvent
         left_panel.addWidget(self.video_player, stretch=1)  # Give video player priority
+        self.playback_controls = PlaybackControls(self.video_player, self._settle_arena_input, self)
+        left_panel.addWidget(self.playback_controls)
 
         # Add LiveScoreWidget as an overlay to the video player
         self.live_score_widget.setParent(self.video_player) # Make it a child of video_player
@@ -1020,6 +1023,7 @@ class VideoAnnotator(ArenaWorkflow, QMainWindow):
         left_panel.addWidget(self.timeline, stretch=0)  # Timeline takes minimum space
 
         # Connect timeline signals to video player
+        self.timeline.frame_clicked.connect(lambda *_: self.playback_controls.pause())
         self.timeline.frame_clicked.connect(self.video_player.goto_frame)
         self.timeline.drag_started.connect(self.video_player._start_timeline_drag)
         self.timeline.drag_ended.connect(self.video_player._end_timeline_drag)
@@ -1266,6 +1270,11 @@ class VideoAnnotator(ArenaWorkflow, QMainWindow):
         save_action = file_menu.addAction('Save Annotations')
         save_action.setShortcut(QKeySequence(self.shortcuts.get('save', 'Ctrl+S')))
         save_action.triggered.connect(self.save_annotations)
+
+        export_menu = menubar.addMenu('Export')
+        grid_action = export_menu.addAction('Behavior Bout Grid Movie...')
+        from annotator_libs.bout_grid_ui import open_bout_grid_export
+        grid_action.triggered.connect(lambda: open_bout_grid_export(self))
 
         arenas_menu = menubar.addMenu('Arenas')
         setup_arenas_action = arenas_menu.addAction('Arena Settings...')
@@ -1834,6 +1843,7 @@ class VideoAnnotator(ArenaWorkflow, QMainWindow):
 
     def load_video_by_path(self, file_path, arena_switch=False):
         """Load a source or an arena crop after safely settling the old session."""
+        self.playback_controls.pause()
         file_path = os.path.abspath(os.fspath(file_path))
         previous_arena_context = self.arena_project, self.arena_project_dir, self.active_arena_id
         # Read and validate the target CSV before replacing a working arena.
@@ -2415,6 +2425,7 @@ class VideoAnnotator(ArenaWorkflow, QMainWindow):
 
     def closeEvent(self, event):
         """Handle application close event to save settings."""
+        self.playback_controls.pause()
         if self.arena_export_worker and self.arena_export_worker.isRunning():
             QMessageBox.information(self, "Arena export running", "Cancel the export or wait for it to finish before closing.")
             event.ignore()

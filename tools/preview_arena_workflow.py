@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import shutil
 from unittest.mock import patch
 
 # Preview settings are grouped here for quick visual-layout experiments.
@@ -34,6 +35,8 @@ from annotator_libs.arena_model import detect_arenas, default_project_dir
 from annotator_libs.arena_export import export_arenas, ffmpeg_executable
 from annotator_libs.arena_ui import ArenaEditor
 from installer.gui import InstallerWindow
+from annotator_libs.bout_grid_ui import BoutGridDialog
+from annotator_libs.bout_grid import GridSource, export_bout_grid
 
 
 def synthetic_frame(index):
@@ -92,6 +95,20 @@ def main():
         polygon_editor.grab().save(str(OUTPUT_DIR / 'arena-polygon-preview.png'))
         polygon_editor.reject()
         export_arenas(source, arenas, default_project_dir(source))
+        # Render a real MAMIR-style montage from synthetic labels only, keeping
+        # an inspectable sample movie and manifest alongside the UI screenshots.
+        bouts = {frame: ['rearing'] for frame in range(VIDEO_FRAMES) if frame % 3 != 2}
+        grid_result = export_bout_grid(
+            [GridSource(arenas[1].video_path(default_project_dir(source)), bouts, 'Arena 2')],
+            'rearing', root / 'grid-preview')
+        grid_capture = cv2.VideoCapture(grid_result['output'])
+        ok, grid_frame = grid_capture.read()
+        grid_capture.release()
+        if not ok:
+            raise RuntimeError('Cannot decode grid preview.')
+        cv2.imwrite(str(OUTPUT_DIR / 'bout-grid-movie-preview.png'), grid_frame)
+        shutil.copy2(grid_result['output'], OUTPUT_DIR / 'bout-grid-demo.mp4')
+        shutil.copy2(grid_result['manifest'], OUTPUT_DIR / 'bout-grid-demo.csv')
 
         def private_settings(organization, application):
             """Keep visual QA from changing the live user's settings."""
@@ -120,6 +137,12 @@ def main():
             app.processEvents()
             window.arena_settings_dialog.grab().save(str(OUTPUT_DIR / 'arena-settings-preview.png'))
             window.arena_settings_dialog.close()
+            grid_dialog = BoutGridDialog(window)
+            grid_dialog.behavior.setCurrentText('rearing')
+            grid_dialog.show()
+            app.processEvents()
+            grid_dialog.grab().save(str(OUTPUT_DIR / 'bout-grid-dialog-preview.png'))
+            grid_dialog.close()
             window.close()
             app.processEvents()
         setup = InstallerWindow()
