@@ -35,6 +35,14 @@ def smoke_test(report_path: Path) -> None:
         import imageio_ffmpeg
         import cv2
         import numpy as np
+        welcome = ethoscore.WelcomeDialog("")
+        if not welcome.brand_logo.renderer().isValid() or welcome.windowIcon().pixmap(48, 48).isNull():
+            raise RuntimeError("The packaged welcome logo or window icon is missing.")
+        welcome.show()
+        app.processEvents()
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        welcome.grab().save(str(report_path.with_name(report_path.stem + "-welcome.png")))
+        welcome.close()
         from annotator_libs.arena_model import Arena, default_project_dir, detect_arenas
         from annotator_libs.arena_export import export_arenas
         window = ethoscore.VideoAnnotator()

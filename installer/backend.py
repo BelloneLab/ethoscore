@@ -20,7 +20,7 @@ import tempfile
 from typing import Callable
 import urllib.request
 import uuid
-from branding import asset_path
+from branding import asset_path, set_windows_shortcut_identity
 
 REPOSITORY = "BelloneLab/ethoscore"
 MARKER = ".ethoscore-install.json"
@@ -270,6 +270,7 @@ def _windows_shortcut(path: Path, executable: Path, cwd: Path, arguments: str = 
                ETHO_ARGUMENTS=arguments, ETHO_ICON=str(icon or executable) + ",0")
     subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script], env=env, check=True,
                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), capture_output=True)
+    set_windows_shortcut_identity(path)
 
 
 def _desktop_directory() -> Path:

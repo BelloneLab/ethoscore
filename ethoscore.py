@@ -678,6 +678,7 @@ class WelcomeDialog(QDialog):
 
     def setup_ui(self):
         self.setWindowTitle("Ethoscore")
+        self.setWindowIcon(application_icon())
         self.setModal(True)
         self.setFixedSize(600, 450)
         
@@ -719,16 +720,18 @@ class WelcomeDialog(QDialog):
         layout.setSpacing(25)
         layout.setContentsMargins(30, 30, 30, 30)
 
-        # Title
-        title_label = QLabel("ETHOSCORE")
-        title_font = QFont()
-        title_font.setPointSize(24)
-        title_font.setBold(True)
-        title_font.setLetterSpacing(QFont.AbsoluteSpacing, 2)
-        title_label.setFont(title_font)
-        title_label.setAlignment(Qt.AlignCenter)
-        title_label.setStyleSheet("color: #3498db; margin-bottom: 10px;")
-        layout.addWidget(title_label)
+        # Use the same outlined vector identity as Setup and native launchers.
+        # A centered container keeps the wordmark's aspect ratio at every DPI.
+        self.brand_logo = QSvgWidget(resource_path("assets/branding/ethoscore-logo-light.svg"))
+        self.brand_logo.setFixedSize(410, 102)
+        self.brand_logo.setAccessibleName("Ethoscore logo")
+        logo_row = QHBoxLayout()
+        logo_row.addStretch()
+        logo_row.addWidget(self.brand_logo)
+        logo_row.addStretch()
+        layout.addStretch(1)
+        layout.addLayout(logo_row)
+        layout.addStretch(1)
 
         # Top row: rescan button (left) and logo (right)
         top_row = QHBoxLayout()
